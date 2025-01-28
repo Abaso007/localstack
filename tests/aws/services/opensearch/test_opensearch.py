@@ -12,10 +12,22 @@ from opensearchpy import OpenSearch
 from opensearchpy.exceptions import AuthorizationException
 
 from localstack import config
-from localstack.aws.accounts import get_aws_account_id
-from localstack.aws.api.opensearch import AdvancedSecurityOptionsInput, MasterUserOptions
-from localstack.config import EDGE_BIND_HOST, LOCALSTACK_HOSTNAME
-from localstack.constants import OPENSEARCH_DEFAULT_VERSION, OPENSEARCH_PLUGIN_LIST
+from localstack.aws.api.opensearch import (
+    AdvancedSecurityOptionsInput,
+    ClusterConfig,
+    DomainEndpointOptions,
+    EBSOptions,
+    EncryptionAtRestOptions,
+    MasterUserOptions,
+    NodeToNodeEncryptionOptions,
+    OpenSearchPartitionInstanceType,
+    VolumeType,
+)
+from localstack.constants import (
+    ELASTICSEARCH_DEFAULT_VERSION,
+    OPENSEARCH_DEFAULT_VERSION,
+    OPENSEARCH_PLUGIN_LIST,
+)
 from localstack.services.opensearch import provider
 from localstack.services.opensearch.cluster import CustomEndpoint, EdgeProxiedOpensearchCluster
 from localstack.services.opensearch.cluster_manager import (
@@ -28,10 +40,10 @@ from localstack.services.opensearch.cluster_manager import (
 )
 from localstack.services.opensearch.packages import opensearch_package
 from localstack.testing.pytest import markers
-from localstack.utils.common import call_safe, poll_condition, retry
+from localstack.utils.common import call_safe, poll_condition, retry, short_uid, start_worker_thread
 from localstack.utils.common import safe_requests as requests
-from localstack.utils.common import short_uid, start_worker_thread
 from localstack.utils.strings import to_str
+from localstack.utils.urls import localstack_host
 
 LOG = logging.getLogger(__name__)
 
@@ -58,9 +70,6 @@ def install_async():
             LOG.info("installing opensearch default version")
             opensearch_package.install()
             LOG.info("done installing opensearch default version")
-            LOG.info("installing opensearch 1.0")
-            opensearch_package.install(version="OpenSearch_1.0")
-            LOG.info("done installing opensearch 1.0")
             installed.set()
 
     start_worker_thread(run_install)
@@ -95,230 +104,41 @@ class TestOpensearchProvider:
     OPENSEARCH_MULTI_CLUSTER=True, regardless of changes in the config value.
     """
 
-    @markers.aws.unknown
-    def test_list_versions(self, aws_client):
+    @markers.aws.validated
+    def test_list_versions(self, aws_client, snapshot):
         response = aws_client.opensearch.list_versions()
+        versions = sorted(
+            version
+            for version in response["Versions"]
+            # LocalStack does not support these versions
+            if version not in ["Elasticsearch_1.5", "Elasticsearch_2.3"]
+        )
+        snapshot.match("versions", versions)
 
-        assert "Versions" in response
-        versions = response["Versions"]
-
-        expected_versions = [
-            "OpenSearch_2.5",
-            "OpenSearch_2.3",
-            "OpenSearch_1.3",
-            "OpenSearch_1.2",
-            "OpenSearch_1.1",
-            "OpenSearch_1.0",
-            "Elasticsearch_7.10",
-            "Elasticsearch_7.9",
-            "Elasticsearch_7.8",
-            "Elasticsearch_7.7",
-            "Elasticsearch_7.4",
-            "Elasticsearch_7.1",
-            "Elasticsearch_6.8",
-            "Elasticsearch_6.7",
-            "Elasticsearch_6.5",
-            "Elasticsearch_6.4",
-            "Elasticsearch_6.3",
-            "Elasticsearch_6.2",
-            "Elasticsearch_6.0",
-            "Elasticsearch_5.6",
-            "Elasticsearch_5.5",
-            "Elasticsearch_5.3",
-            "Elasticsearch_5.1",
-        ]
-        # We iterate over the expected versions to avoid breaking the test if new versions are supported
-        for expected_version in expected_versions:
-            assert expected_version in versions
-
-    @markers.aws.unknown
-    def test_get_compatible_versions(self, aws_client):
+    @markers.aws.validated
+    def test_get_compatible_versions(self, aws_client, snapshot):
         response = aws_client.opensearch.get_compatible_versions()
+        source_versions = sorted(
+            version["SourceVersion"] for version in response["CompatibleVersions"]
+        )
+        snapshot.match("source_versions", source_versions)
+        for version in sorted(response["CompatibleVersions"], key=lambda x: x["SourceVersion"]):
+            snapshot.match(f"source_{version['SourceVersion'].lower()}", version["TargetVersions"])
 
-        assert "CompatibleVersions" in response
-
-        compatible_versions = response["CompatibleVersions"]
-
-        assert len(compatible_versions) >= 20
-        expected_compatible_versions = [
-            {
-                "SourceVersion": "OpenSearch_2.3",
-                "TargetVersions": ["OpenSearch_2.5"],
-            },
-            {
-                "SourceVersion": "OpenSearch_1.0",
-                "TargetVersions": ["OpenSearch_1.1", "OpenSearch_1.2", "OpenSearch_1.3"],
-            },
-            {
-                "SourceVersion": "OpenSearch_1.1",
-                "TargetVersions": ["OpenSearch_1.2", "OpenSearch_1.3"],
-            },
-            {
-                "SourceVersion": "OpenSearch_1.2",
-                "TargetVersions": ["OpenSearch_1.3"],
-            },
-            {
-                "SourceVersion": "OpenSearch_1.3",
-                "TargetVersions": ["OpenSearch_2.3", "OpenSearch_2.5"],
-            },
-            {
-                "SourceVersion": "Elasticsearch_7.10",
-                "TargetVersions": [
-                    "OpenSearch_1.0",
-                    "OpenSearch_1.1",
-                    "OpenSearch_1.2",
-                    "OpenSearch_1.3",
-                ],
-            },
-            {
-                "SourceVersion": "Elasticsearch_7.9",
-                "TargetVersions": [
-                    "Elasticsearch_7.10",
-                    "OpenSearch_1.0",
-                    "OpenSearch_1.1",
-                    "OpenSearch_1.2",
-                    "OpenSearch_1.3",
-                ],
-            },
-            {
-                "SourceVersion": "Elasticsearch_7.8",
-                "TargetVersions": [
-                    "Elasticsearch_7.9",
-                    "Elasticsearch_7.10",
-                    "OpenSearch_1.0",
-                    "OpenSearch_1.1",
-                    "OpenSearch_1.2",
-                    "OpenSearch_1.3",
-                ],
-            },
-            {
-                "SourceVersion": "Elasticsearch_7.7",
-                "TargetVersions": [
-                    "Elasticsearch_7.8",
-                    "Elasticsearch_7.9",
-                    "Elasticsearch_7.10",
-                    "OpenSearch_1.0",
-                    "OpenSearch_1.1",
-                    "OpenSearch_1.2",
-                    "OpenSearch_1.3",
-                ],
-            },
-            {
-                "SourceVersion": "Elasticsearch_7.4",
-                "TargetVersions": [
-                    "Elasticsearch_7.7",
-                    "Elasticsearch_7.8",
-                    "Elasticsearch_7.9",
-                    "Elasticsearch_7.10",
-                    "OpenSearch_1.0",
-                    "OpenSearch_1.1",
-                    "OpenSearch_1.2",
-                    "OpenSearch_1.3",
-                ],
-            },
-            {
-                "SourceVersion": "Elasticsearch_7.1",
-                "TargetVersions": [
-                    "Elasticsearch_7.4",
-                    "Elasticsearch_7.7",
-                    "Elasticsearch_7.8",
-                    "Elasticsearch_7.9",
-                    "Elasticsearch_7.10",
-                    "OpenSearch_1.0",
-                    "OpenSearch_1.1",
-                    "OpenSearch_1.2",
-                    "OpenSearch_1.3",
-                ],
-            },
-            {
-                "SourceVersion": "Elasticsearch_6.8",
-                "TargetVersions": [
-                    "Elasticsearch_7.1",
-                    "Elasticsearch_7.4",
-                    "Elasticsearch_7.7",
-                    "Elasticsearch_7.8",
-                    "Elasticsearch_7.9",
-                    "Elasticsearch_7.10",
-                    "OpenSearch_1.0",
-                    "OpenSearch_1.1",
-                    "OpenSearch_1.2",
-                    "OpenSearch_1.3",
-                ],
-            },
-            {"SourceVersion": "Elasticsearch_6.7", "TargetVersions": ["Elasticsearch_6.8"]},
-            {
-                "SourceVersion": "Elasticsearch_6.5",
-                "TargetVersions": ["Elasticsearch_6.7", "Elasticsearch_6.8"],
-            },
-            {
-                "SourceVersion": "Elasticsearch_6.4",
-                "TargetVersions": [
-                    "Elasticsearch_6.5",
-                    "Elasticsearch_6.7",
-                    "Elasticsearch_6.8",
-                ],
-            },
-            {
-                "SourceVersion": "Elasticsearch_6.3",
-                "TargetVersions": [
-                    "Elasticsearch_6.4",
-                    "Elasticsearch_6.5",
-                    "Elasticsearch_6.7",
-                    "Elasticsearch_6.8",
-                ],
-            },
-            {
-                "SourceVersion": "Elasticsearch_6.2",
-                "TargetVersions": [
-                    "Elasticsearch_6.3",
-                    "Elasticsearch_6.4",
-                    "Elasticsearch_6.5",
-                    "Elasticsearch_6.7",
-                    "Elasticsearch_6.8",
-                ],
-            },
-            {
-                "SourceVersion": "Elasticsearch_6.0",
-                "TargetVersions": [
-                    "Elasticsearch_6.3",
-                    "Elasticsearch_6.4",
-                    "Elasticsearch_6.5",
-                    "Elasticsearch_6.7",
-                    "Elasticsearch_6.8",
-                ],
-            },
-            {
-                "SourceVersion": "Elasticsearch_5.6",
-                "TargetVersions": [
-                    "Elasticsearch_6.3",
-                    "Elasticsearch_6.4",
-                    "Elasticsearch_6.5",
-                    "Elasticsearch_6.7",
-                    "Elasticsearch_6.8",
-                ],
-            },
-            {"SourceVersion": "Elasticsearch_5.5", "TargetVersions": ["Elasticsearch_5.6"]},
-            {"SourceVersion": "Elasticsearch_5.3", "TargetVersions": ["Elasticsearch_5.6"]},
-            {"SourceVersion": "Elasticsearch_5.1", "TargetVersions": ["Elasticsearch_5.6"]},
-        ]
-        # Iterate over the expected compatible versions to avoid breaking the test if new versions are supported
-        for expected_compatible_version in expected_compatible_versions:
-            assert expected_compatible_version in compatible_versions
-
-    @markers.aws.unknown
+    @markers.aws.needs_fixing
     def test_get_compatible_version_for_domain(self, opensearch_create_domain, aws_client):
-        opensearch_domain = opensearch_create_domain(EngineVersion="OpenSearch_1.0")
+        opensearch_domain = opensearch_create_domain(EngineVersion=ELASTICSEARCH_DEFAULT_VERSION)
         response = aws_client.opensearch.get_compatible_versions(DomainName=opensearch_domain)
         assert "CompatibleVersions" in response
         compatible_versions = response["CompatibleVersions"]
 
         assert len(compatible_versions) == 1
         compatibility = compatible_versions[0]
-        assert compatibility["SourceVersion"] == "OpenSearch_1.0"
+        assert compatibility["SourceVersion"] == ELASTICSEARCH_DEFAULT_VERSION
         # Just check if 1.1 is contained (not equality) to avoid breaking the test if new versions are supported
-        assert "OpenSearch_1.1" in compatibility["TargetVersions"]
+        assert "OpenSearch_1.3" in compatibility["TargetVersions"]
 
-    @markers.aws.unknown
+    @markers.aws.needs_fixing
     def test_create_domain(self, opensearch_wait_for_cluster, aws_client):
         domain_name = f"opensearch-domain-{short_uid()}"
         try:
@@ -333,25 +153,20 @@ class TestOpensearchProvider:
             # wait for the cluster
             opensearch_wait_for_cluster(domain_name=domain_name)
 
-            # make sure the plugins are installed
+            # make sure the plugins are installed (Sort and display component)
             plugins_url = (
                 f"https://{domain_status['Endpoint']}/_cat/plugins?s=component&h=component"
             )
             plugins_response = requests.get(plugins_url, headers={"Accept": "application/json"})
-            installed_plugins = set(plugin["component"] for plugin in plugins_response.json())
+            installed_plugins = {plugin["component"] for plugin in plugins_response.json()}
             requested_plugins = set(OPENSEARCH_PLUGIN_LIST)
             assert requested_plugins.issubset(installed_plugins)
         finally:
             aws_client.opensearch.delete_domain(DomainName=domain_name)
 
     @markers.aws.only_localstack
-    @pytest.mark.parametrize(
-        "engine_version",
-        # Test once per major version
-        ["OpenSearch_1.3", "OpenSearch_2.5"],
-    )
-    def test_security_plugin(self, opensearch_create_domain, engine_version, aws_client):
-        master_user_auth = ("master-user", "12345678Aa!")
+    def test_security_plugin(self, opensearch_create_domain, aws_client):
+        master_user_auth = ("master-user", "1[D3&2S)u9[G")
 
         # enable the security plugin for this test
         advanced_security_options = AdvancedSecurityOptionsInput(
@@ -362,14 +177,12 @@ class TestOpensearchProvider:
                 MasterUserPassword=master_user_auth[1],
             ),
         )
-        domain_name = opensearch_create_domain(
-            EngineVersion=engine_version, AdvancedSecurityOptions=advanced_security_options
-        )
+        domain_name = opensearch_create_domain(AdvancedSecurityOptions=advanced_security_options)
         endpoint = aws_client.opensearch.describe_domain(DomainName=domain_name)["DomainStatus"][
             "Endpoint"
         ]
 
-        # make sure the plugins are installed
+        # make sure the plugins are installed (Sort and display component)
         plugins_url = f"https://{endpoint}/_cat/plugins?s=component&h=component"
 
         # request without credentials fails
@@ -381,7 +194,7 @@ class TestOpensearchProvider:
             plugins_url, headers={"Accept": "application/json"}, auth=master_user_auth
         )
         assert plugins_response.status_code == 200
-        installed_plugins = set(plugin["component"] for plugin in plugins_response.json())
+        installed_plugins = {plugin["component"] for plugin in plugins_response.json()}
         assert "opensearch-security" in installed_plugins
 
         # create a new index with the admin user
@@ -402,16 +215,16 @@ class TestOpensearchProvider:
         assert response.status_code == 201
 
         # create a new user which is only mapped to the readall role
-        test_user = {"password": "test_password", "backend_roles": ["readall"]}
+        test_user_auth = ("test_user", "J2j7Gun!30Abvy")
+        test_user = {"password": test_user_auth[1], "backend_roles": ["readall"]}
         response = requests.put(
-            f"https://{endpoint}/_plugins/_security/api/internalusers/test_user",
+            f"https://{endpoint}/_plugins/_security/api/internalusers/{test_user_auth[0]}",
             json=test_user,
             auth=master_user_auth,
         )
         assert response.status_code == 201
 
         # ensure the user can only read but cannot write
-        test_user_auth = ("test_user", "test_password")
         test_user_client = OpenSearch(hosts=endpoint, http_auth=test_user_auth)
 
         def _search():
@@ -444,15 +257,125 @@ class TestOpensearchProvider:
         test_user_client.index(test_index_name, body={"test-key1": "test-value1"})
 
     @markers.aws.validated
+    def test_sql_plugin(self, opensearch_create_domain, aws_client, snapshot, account_id):
+        master_user_auth = ("admin", "QWERTYuiop123!")
+        domain_name = f"sql-test-domain-{short_uid()}"
+        access_policy = {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Principal": {"AWS": "*"},
+                    "Action": "es:*",
+                    "Resource": f"arn:aws:es:*:{account_id}:domain/{domain_name}/*",
+                }
+            ],
+        }
+
+        # create a domain that works on aws
+        opensearch_create_domain(
+            DomainName=domain_name,
+            EngineVersion=OPENSEARCH_DEFAULT_VERSION,
+            ClusterConfig=ClusterConfig(
+                InstanceType=OpenSearchPartitionInstanceType("t3.small.search"), InstanceCount=1
+            ),
+            EBSOptions=EBSOptions(EBSEnabled=True, VolumeType=VolumeType("gp2"), VolumeSize=10),
+            AdvancedSecurityOptions=AdvancedSecurityOptionsInput(
+                Enabled=True,
+                InternalUserDatabaseEnabled=True,
+                MasterUserOptions=MasterUserOptions(
+                    MasterUserName=master_user_auth[0],
+                    MasterUserPassword=master_user_auth[1],
+                ),
+            ),
+            NodeToNodeEncryptionOptions=NodeToNodeEncryptionOptions(Enabled=True),
+            EncryptionAtRestOptions=EncryptionAtRestOptions(Enabled=True),
+            DomainEndpointOptions=DomainEndpointOptions(EnforceHTTPS=True),
+            AccessPolicies=json.dumps(access_policy),
+        )
+        endpoint = aws_client.opensearch.describe_domain(DomainName=domain_name)["DomainStatus"][
+            "Endpoint"
+        ]
+
+        # make sure the sql plugin is installed (Sort and display component)
+        plugins_url = f"https://{endpoint}/_cat/plugins?s=component&h=component"
+        response = requests.get(
+            plugins_url,
+            auth=master_user_auth,
+            headers={**COMMON_HEADERS, "Accept": "application/json"},
+        )
+        installed_plugins = {plugin["component"] for plugin in response.json()}
+        assert "opensearch-sql" in installed_plugins
+        assert "opensearch-sql" in installed_plugins, "Opensearch sql plugin is not present"
+
+        # data insert preparation for sql query
+        document = {
+            "first_name": "Boba",
+            "last_name": "Fett",
+            "age": 41,
+            "about": "I'm just a simple man, trying to make my way in the universe.",
+            "interests": ["mandalorian armor", "tusken culture"],
+        }
+        index = "bountyhunters"
+        document_path = f"https://{endpoint}/{index}/_doc/1"
+        response = requests.put(
+            document_path,
+            auth=master_user_auth,
+            data=json.dumps(document),
+            headers=COMMON_HEADERS,
+        )
+        assert response.ok
+
+        # force the refresh of the index after the document was added, so it can appear in search
+        response = requests.post(
+            f"https://{endpoint}/_refresh", auth=master_user_auth, headers=COMMON_HEADERS
+        )
+        assert response.ok
+
+        # ensure sql query returns correct
+        query = {"query": f"SELECT * FROM {index} WHERE last_name = 'Fett'"}
+        response = requests.post(
+            f"https://{endpoint}/_plugins/_sql",
+            auth=master_user_auth,
+            data=json.dumps(query),
+            headers=COMMON_HEADERS,
+        )
+        snapshot.match("sql_query_response", response.json())
+
+        assert "I'm just a simple man" in response.text, (
+            f"query unsuccessful({response.status_code}): {response.text}"
+        )
+
+    @markers.aws.validated
     def test_create_domain_with_invalid_name(self, aws_client):
         with pytest.raises(botocore.exceptions.ClientError) as e:
             aws_client.opensearch.create_domain(
                 DomainName="123abc"
-            )  # domain needs to start with characters
+            )  # domain needs to start with alphabetic characters
         assert e.value.response["Error"]["Code"] == "ValidationException"
 
         with pytest.raises(botocore.exceptions.ClientError) as e:
             aws_client.opensearch.create_domain(DomainName="abc#")  # no special characters allowed
+        assert e.value.response["Error"]["Code"] == "ValidationException"
+
+    @markers.aws.needs_fixing
+    def test_create_domain_with_invalid_custom_endpoint(self, aws_client):
+        with pytest.raises(botocore.exceptions.ClientError) as e:
+            aws_client.opensearch.create_domain(
+                DomainName="abc",
+                DomainEndpointOptions={
+                    "CustomEndpoint": "custom-endpoint",
+                },
+            )  # CustomEndpoint cannot be set without CustomEndpointEnabled
+        assert e.value.response["Error"]["Code"] == "ValidationException"
+
+        with pytest.raises(botocore.exceptions.ClientError) as e:
+            aws_client.opensearch.create_domain(
+                DomainName="abc",
+                DomainEndpointOptions={
+                    "CustomEndpointEnabled": True,
+                },
+            )  # CustomEndpointEnabled cannot be set without CustomEndpoint
         assert e.value.response["Error"]["Code"] == "ValidationException"
 
     @markers.aws.validated
@@ -466,7 +389,7 @@ class TestOpensearchProvider:
             == "ValidationException"
         )
 
-    @markers.aws.unknown
+    @markers.aws.needs_fixing
     def test_create_existing_domain_causes_exception(self, opensearch_wait_for_cluster, aws_client):
         domain_name = f"opensearch-domain-{short_uid()}"
         try:
@@ -478,13 +401,13 @@ class TestOpensearchProvider:
         finally:
             aws_client.opensearch.delete_domain(DomainName=domain_name)
 
-    @markers.aws.unknown
+    @markers.aws.needs_fixing
     def test_describe_domains(self, opensearch_domain, aws_client):
         response = aws_client.opensearch.describe_domains(DomainNames=[opensearch_domain])
         assert len(response["DomainStatusList"]) == 1
         assert response["DomainStatusList"][0]["DomainName"] == opensearch_domain
 
-    @markers.aws.unknown
+    @markers.aws.needs_fixing
     def test_gzip_responses(self, opensearch_endpoint, monkeypatch):
         def send_plain_request(method, url):
             """
@@ -497,11 +420,15 @@ class TestOpensearchProvider:
             connection.putrequest(method, parsed.path, skip_accept_encoding=True)
             connection.endheaders()
             response = connection.getresponse()
-            connection.close()
-            return response
+            try:
+                return response, response.read()
+            finally:
+                # make sure to close the connectio *after* we've called ``response.read()``.
+                response.close()
 
-        plain_response = send_plain_request("GET", opensearch_endpoint)
-        assert "cluster_name" in to_str(plain_response.read())
+        plain_response, data = send_plain_request("GET", opensearch_endpoint)
+        assert plain_response.status == 200
+        assert "cluster_name" in to_str(data)
 
         # ensure that requests with the "Accept-Encoding": "gzip" header receive gzip compressed responses
         gzip_accept_headers = {"Accept-Encoding": "gzip"}
@@ -513,21 +440,15 @@ class TestOpensearchProvider:
         # force the gzip decoding here (which would raise an exception if it's not actually gzip)
         assert gzip.decompress(raw_gzip_data)
 
-    @markers.aws.unknown
+    @markers.aws.needs_fixing
     def test_domain_version(self, opensearch_domain, opensearch_create_domain, aws_client):
         response = aws_client.opensearch.describe_domain(DomainName=opensearch_domain)
         assert "DomainStatus" in response
         status = response["DomainStatus"]
         assert "EngineVersion" in status
         assert status["EngineVersion"] == OPENSEARCH_DEFAULT_VERSION
-        domain_name = opensearch_create_domain(EngineVersion="OpenSearch_1.0")
-        response = aws_client.opensearch.describe_domain(DomainName=domain_name)
-        assert "DomainStatus" in response
-        status = response["DomainStatus"]
-        assert "EngineVersion" in status
-        assert status["EngineVersion"] == "OpenSearch_1.0"
 
-    @markers.aws.unknown
+    @markers.aws.needs_fixing
     def test_update_domain_config(self, opensearch_domain, aws_client):
         initial_response = aws_client.opensearch.describe_domain_config(
             DomainName=opensearch_domain
@@ -550,7 +471,7 @@ class TestOpensearchProvider:
             == final_response["DomainConfig"]["ClusterConfig"]["Options"]["InstanceType"]
         )
 
-    @markers.aws.unknown
+    @markers.aws.needs_fixing
     def test_create_indices(self, opensearch_endpoint):
         indices = ["index1", "index2"]
         for index_name in indices:
@@ -563,14 +484,41 @@ class TestOpensearchProvider:
             assert req_result[0]["health"] in ["green", "yellow"]
             assert req_result[0]["index"] in indices
 
-    @markers.aws.unknown
+        # create a knn index to make sure the knn plugin works
+        index_path = f"{opensearch_endpoint}/knn"
+        body = {
+            "settings": {"index": {"knn": True}},
+            "mappings": {
+                "properties": {
+                    "embedding": {
+                        "type": "knn_vector",
+                        "dimension": 2,
+                    }
+                }
+            },
+        }
+        put = requests.put(index_path, headers=COMMON_HEADERS, json=body)
+        assert put.status_code == 200
+        get = requests.get(f"{opensearch_endpoint}/_cat/indices/knn?format=json&pretty")
+        assert get.status_code == 200
+
+        # add a document
+        document_path = f"{opensearch_endpoint}/knn/_doc/test_document"
+        body = {"embedding": [1, 2]}
+        put = requests.put(document_path, headers=COMMON_HEADERS, json=body)
+        assert put.status_code == 201
+
+        get = requests.get(document_path)
+        assert get.status_code == 200
+
+    @markers.aws.needs_fixing
     def test_get_document(self, opensearch_document_path):
         response = requests.get(opensearch_document_path)
-        assert (
-            "I'm just a simple man" in response.text
-        ), f"document not found({response.status_code}): {response.text}"
+        assert "I'm just a simple man" in response.text, (
+            f"document not found({response.status_code}): {response.text}"
+        )
 
-    @markers.aws.unknown
+    @markers.aws.needs_fixing
     def test_search(self, opensearch_endpoint, opensearch_document_path):
         index = "/".join(opensearch_document_path.split("/")[:-2])
         # force the refresh of the index after the document was added, so it can appear in search
@@ -580,11 +528,11 @@ class TestOpensearchProvider:
         search = {"query": {"match": {"last_name": "Fett"}}}
         response = requests.get(f"{index}/_search", data=json.dumps(search), headers=COMMON_HEADERS)
 
-        assert (
-            "I'm just a simple man" in response.text
-        ), f"search unsuccessful({response.status_code}): {response.text}"
+        assert "I'm just a simple man" in response.text, (
+            f"search unsuccessful({response.status_code}): {response.text}"
+        )
 
-    @markers.aws.unknown
+    @markers.aws.only_localstack
     def test_endpoint_strategy_path(self, monkeypatch, opensearch_create_domain, aws_client):
         monkeypatch.setattr(config, "OPENSEARCH_ENDPOINT_STRATEGY", "path")
 
@@ -597,7 +545,7 @@ class TestOpensearchProvider:
         endpoint = status["Endpoint"]
         assert endpoint.endswith(f"/{domain_name}")
 
-    @markers.aws.unknown
+    @markers.aws.only_localstack
     def test_endpoint_strategy_port(self, monkeypatch, opensearch_create_domain, aws_client):
         monkeypatch.setattr(config, "OPENSEARCH_ENDPOINT_STRATEGY", "port")
 
@@ -609,13 +557,13 @@ class TestOpensearchProvider:
         assert "Endpoint" in status
         endpoint = status["Endpoint"]
         parts = endpoint.split(":")
-        assert parts[0] in ("localhost", "127.0.0.1")
+        assert parts[0] in (localstack_host().host, "127.0.0.1")
         assert int(parts[1]) in range(
             config.EXTERNAL_SERVICE_PORTS_START, config.EXTERNAL_SERVICE_PORTS_END
         )
 
     # testing CloudFormation deployment here to make sure OpenSearch is installed
-    @markers.aws.unknown
+    @markers.aws.needs_fixing
     def test_cloudformation_deployment(self, deploy_cfn_template, aws_client):
         domain_name = f"domain-{short_uid()}"
         deploy_cfn_template(
@@ -632,10 +580,10 @@ class TestOpensearchProvider:
 
 @markers.skip_offline
 class TestEdgeProxiedOpensearchCluster:
-    @markers.aws.unknown
+    @markers.aws.only_localstack
     def test_route_through_edge(self):
         cluster_id = f"domain-{short_uid()}"
-        cluster_url = f"http://localhost:{config.EDGE_PORT}/{cluster_id}"
+        cluster_url = f"{config.internal_service_url()}/{cluster_id}"
         arn = f"arn:aws:es:us-east-1:000000000000:domain/{cluster_id}"
         cluster = EdgeProxiedOpensearchCluster(cluster_url, arn, CustomEndpoint(True, cluster_url))
 
@@ -645,7 +593,7 @@ class TestEdgeProxiedOpensearchCluster:
 
             response = requests.get(cluster_url)
             assert response.ok, f"cluster endpoint returned an error: {response.text}"
-            assert response.json()["version"]["number"] == "2.5.0"
+            assert response.json()["version"]["number"] == "2.11.1"
 
             response = requests.get(f"{cluster_url}/_cluster/health")
             assert response.ok, f"cluster health endpoint returned an error: {response.text}"
@@ -659,11 +607,11 @@ class TestEdgeProxiedOpensearchCluster:
         finally:
             cluster.shutdown()
 
-        assert poll_condition(
-            lambda: not cluster.is_up(), timeout=240
-        ), "gave up waiting for cluster to shut down"
+        assert poll_condition(lambda: not cluster.is_up(), timeout=240), (
+            "gave up waiting for cluster to shut down"
+        )
 
-    @markers.aws.unknown
+    @markers.aws.only_localstack
     def test_custom_endpoint(
         self, opensearch_wait_for_cluster, opensearch_create_domain, aws_client
     ):
@@ -678,6 +626,13 @@ class TestEdgeProxiedOpensearchCluster:
             DomainName=domain_name, DomainEndpointOptions=domain_endpoint_options
         )
 
+        response = aws_client.opensearch.describe_domain(DomainName=domain_name)
+        response_domain_endpoint_options = response["DomainStatus"]["DomainEndpointOptions"]
+        assert response_domain_endpoint_options["EnforceHTTPS"] is False
+        assert response_domain_endpoint_options["TLSSecurityPolicy"]
+        assert response_domain_endpoint_options["CustomEndpointEnabled"] is True
+        assert response_domain_endpoint_options["CustomEndpoint"] == custom_endpoint
+
         response = aws_client.opensearch.list_domain_names(EngineType="OpenSearch")
         domain_names = [domain["DomainName"] for domain in response["DomainNames"]]
 
@@ -688,14 +643,12 @@ class TestEdgeProxiedOpensearchCluster:
         assert response.ok
         assert response.status_code == 200
 
-    @markers.aws.unknown
+    @markers.aws.only_localstack
     def test_custom_endpoint_disabled(
         self, opensearch_wait_for_cluster, opensearch_create_domain, aws_client
     ):
         domain_name = f"opensearch-domain-{short_uid()}"
-        custom_endpoint = "http://localhost:4566/my-custom-endpoint"
         domain_endpoint_options = {
-            "CustomEndpoint": custom_endpoint,
             "CustomEndpointEnabled": False,
         }
 
@@ -707,14 +660,16 @@ class TestEdgeProxiedOpensearchCluster:
         response_domain_name = response["DomainStatus"]["DomainName"]
         assert domain_name == response_domain_name
 
+        response_domain_endpoint_options = response["DomainStatus"]["DomainEndpointOptions"]
+        assert response_domain_endpoint_options["EnforceHTTPS"] is False
+        assert response_domain_endpoint_options["TLSSecurityPolicy"]
+        assert response_domain_endpoint_options["CustomEndpointEnabled"] is False
+        assert "CustomEndpoint" not in response_domain_endpoint_options
+
         endpoint = f"http://{response['DomainStatus']['Endpoint']}"
 
         # wait for the cluster
         opensearch_wait_for_cluster(domain_name=domain_name)
-        response = requests.get(f"{custom_endpoint}/_cluster/health")
-        assert not response.ok
-        assert response.status_code == 404
-
         response = requests.get(f"{endpoint}/_cluster/health")
         assert response.ok
         assert response.status_code == 200
@@ -722,8 +677,8 @@ class TestEdgeProxiedOpensearchCluster:
 
 @markers.skip_offline
 class TestMultiClusterManager:
-    @markers.aws.unknown
-    def test_multi_cluster(self, monkeypatch):
+    @markers.aws.only_localstack
+    def test_multi_cluster(self, account_id, monkeypatch):
         monkeypatch.setattr(config, "OPENSEARCH_ENDPOINT_STRATEGY", "domain")
         monkeypatch.setattr(config, "OPENSEARCH_MULTI_CLUSTER", True)
 
@@ -733,12 +688,12 @@ class TestMultiClusterManager:
         domain_key_0 = DomainKey(
             domain_name=f"domain-{short_uid()}",
             region="us-east-1",
-            account=get_aws_account_id(),
+            account=account_id,
         )
         domain_key_1 = DomainKey(
             domain_name=f"domain-{short_uid()}",
             region="us-east-1",
-            account=get_aws_account_id(),
+            account=account_id,
         )
         cluster_0 = manager.create(domain_key_0.arn, OPENSEARCH_DEFAULT_VERSION)
         cluster_1 = manager.create(domain_key_1.arn, OPENSEARCH_DEFAULT_VERSION)
@@ -757,9 +712,9 @@ class TestMultiClusterManager:
 
             response = requests.put(index_url_0)
             assert response.ok, f"failed to put index into cluster {cluster_0.url}: {response.text}"
-            assert poll_condition(
-                lambda: requests.head(index_url_0).ok, timeout=10
-            ), "gave up waiting for index"
+            assert poll_condition(lambda: requests.head(index_url_0).ok, timeout=10), (
+                "gave up waiting for index"
+            )
 
             assert not requests.head(index_url_1).ok, "index should not appear in second cluster"
 
@@ -770,8 +725,8 @@ class TestMultiClusterManager:
 
 @markers.skip_offline
 class TestMultiplexingClusterManager:
-    @markers.aws.unknown
-    def test_multiplexing_cluster(self, monkeypatch):
+    @markers.aws.only_localstack
+    def test_multiplexing_cluster(self, account_id, monkeypatch):
         monkeypatch.setattr(config, "OPENSEARCH_ENDPOINT_STRATEGY", "domain")
         monkeypatch.setattr(config, "OPENSEARCH_MULTI_CLUSTER", False)
 
@@ -781,12 +736,12 @@ class TestMultiplexingClusterManager:
         domain_key_0 = DomainKey(
             domain_name=f"domain-{short_uid()}",
             region="us-east-1",
-            account=get_aws_account_id(),
+            account=account_id,
         )
         domain_key_1 = DomainKey(
             domain_name=f"domain-{short_uid()}",
             region="us-east-1",
-            account=get_aws_account_id(),
+            account=account_id,
         )
         cluster_0 = manager.create(domain_key_0.arn, OPENSEARCH_DEFAULT_VERSION)
         cluster_1 = manager.create(domain_key_1.arn, OPENSEARCH_DEFAULT_VERSION)
@@ -805,9 +760,9 @@ class TestMultiplexingClusterManager:
 
             response = requests.put(index_url_0)
             assert response.ok, f"failed to put index into cluster {cluster_0.url}: {response.text}"
-            assert poll_condition(
-                lambda: requests.head(index_url_0).ok, timeout=10
-            ), "gave up waiting for index"
+            assert poll_condition(lambda: requests.head(index_url_0).ok, timeout=10), (
+                "gave up waiting for index"
+            )
 
             assert requests.head(index_url_1).ok, "index should appear in second cluster"
 
@@ -818,8 +773,8 @@ class TestMultiplexingClusterManager:
 
 @markers.skip_offline
 class TestSingletonClusterManager:
-    @markers.aws.unknown
-    def test_endpoint_strategy_port_singleton_cluster(self, monkeypatch):
+    @markers.aws.only_localstack
+    def test_endpoint_strategy_port_singleton_cluster(self, account_id, monkeypatch):
         monkeypatch.setattr(config, "OPENSEARCH_ENDPOINT_STRATEGY", "port")
         monkeypatch.setattr(config, "OPENSEARCH_MULTI_CLUSTER", False)
 
@@ -829,12 +784,12 @@ class TestSingletonClusterManager:
         domain_key_0 = DomainKey(
             domain_name=f"domain-{short_uid()}",
             region="us-east-1",
-            account=get_aws_account_id(),
+            account=account_id,
         )
         domain_key_1 = DomainKey(
             domain_name=f"domain-{short_uid()}",
             region="us-east-1",
-            account=get_aws_account_id(),
+            account=account_id,
         )
         cluster_0 = manager.create(domain_key_0.arn, OPENSEARCH_DEFAULT_VERSION)
         cluster_1 = manager.create(domain_key_1.arn, OPENSEARCH_DEFAULT_VERSION)
@@ -844,7 +799,7 @@ class TestSingletonClusterManager:
         parts = cluster_0.url.split(":")
         assert parts[0] == "http"
         # either f"//{the bind host}" is used, or in the case of "//0.0.0.0" the localstack hostname instead
-        assert parts[1][2:] in [EDGE_BIND_HOST, LOCALSTACK_HOSTNAME]
+        assert parts[1][2:] in [config.GATEWAY_LISTEN[0].host, localstack_host().host]
         assert int(parts[2]) in range(
             config.EXTERNAL_SERVICE_PORTS_START, config.EXTERNAL_SERVICE_PORTS_END
         )
@@ -864,8 +819,8 @@ class TestSingletonClusterManager:
 
 @markers.skip_offline
 class TestCustomBackendManager:
-    @markers.aws.unknown
-    def test_custom_backend(self, httpserver, monkeypatch):
+    @markers.aws.only_localstack
+    def test_custom_backend(self, account_id, httpserver, monkeypatch):
         monkeypatch.setattr(config, "OPENSEARCH_ENDPOINT_STRATEGY", "domain")
         monkeypatch.setattr(config, "OPENSEARCH_CUSTOM_BACKEND", httpserver.url_for("/"))
 
@@ -915,7 +870,7 @@ class TestCustomBackendManager:
         domain_key = DomainKey(
             domain_name=f"domain-{short_uid()}",
             region="us-east-1",
-            account=get_aws_account_id(),
+            account=account_id,
         )
         cluster = manager.create(domain_key.arn, OPENSEARCH_DEFAULT_VERSION)
         # check that we're using the domain endpoint strategy
@@ -930,7 +885,7 @@ class TestCustomBackendManager:
 
         httpserver.check()
 
-    @markers.aws.unknown
+    @markers.aws.only_localstack
     def test_custom_backend_with_custom_endpoint(
         self,
         httpserver,

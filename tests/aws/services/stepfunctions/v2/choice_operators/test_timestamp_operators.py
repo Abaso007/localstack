@@ -1,17 +1,9 @@
 from typing import Any, Final
 
-import pytest
-
 from localstack.testing.pytest import markers
-from tests.aws.services.stepfunctions.utils import is_old_provider
 from tests.aws.services.stepfunctions.v2.choice_operators.utils import (
     create_and_test_comparison_function,
 )
-
-pytestmark = pytest.mark.skipif(
-    condition=is_old_provider(), reason="Test suite for v2 provider only."
-)
-
 
 # TODO: test for validation errors, and boundary testing.
 
@@ -37,15 +29,12 @@ T1: Final[str] = "2012-10-09T19:00:56Z"
 BASE_COMPARISONS: Final[list[tuple[str, str]]] = [(T0, T0), (T0, T1), (T1, T0)]
 
 
-@markers.snapshot.skip_snapshot_verify(
-    paths=["$..loggingConfiguration", "$..tracingConfiguration", "$..previousEventId"]
-)
 class TestTimestamps:
     @markers.aws.validated
     def test_timestamp_equals(
         self,
         aws_client,
-        create_iam_role_for_sfn,
+        create_state_machine_iam_role,
         create_state_machine,
         sfn_snapshot,
     ):
@@ -54,8 +43,8 @@ class TestTimestamps:
             type_equals.append((var, T0))
 
         create_and_test_comparison_function(
-            aws_client.stepfunctions,
-            create_iam_role_for_sfn,
+            aws_client,
+            create_state_machine_iam_role,
             create_state_machine,
             sfn_snapshot,
             "TimestampEquals",
@@ -66,13 +55,13 @@ class TestTimestamps:
     def test_timestamp_equals_path(
         self,
         aws_client,
-        create_iam_role_for_sfn,
+        create_state_machine_iam_role,
         create_state_machine,
         sfn_snapshot,
     ):
         create_and_test_comparison_function(
-            aws_client.stepfunctions,
-            create_iam_role_for_sfn,
+            aws_client,
+            create_state_machine_iam_role,
             create_state_machine,
             sfn_snapshot,
             "TimestampEqualsPath",
@@ -84,13 +73,13 @@ class TestTimestamps:
     def test_timestamp_greater_than(
         self,
         aws_client,
-        create_iam_role_for_sfn,
+        create_state_machine_iam_role,
         create_state_machine,
         sfn_snapshot,
     ):
         create_and_test_comparison_function(
-            aws_client.stepfunctions,
-            create_iam_role_for_sfn,
+            aws_client,
+            create_state_machine_iam_role,
             create_state_machine,
             sfn_snapshot,
             "TimestampGreaterThan",
@@ -101,13 +90,13 @@ class TestTimestamps:
     def test_timestamp_greater_than_path(
         self,
         aws_client,
-        create_iam_role_for_sfn,
+        create_state_machine_iam_role,
         create_state_machine,
         sfn_snapshot,
     ):
         create_and_test_comparison_function(
-            aws_client.stepfunctions,
-            create_iam_role_for_sfn,
+            aws_client,
+            create_state_machine_iam_role,
             create_state_machine,
             sfn_snapshot,
             "TimestampGreaterThanPath",
@@ -119,13 +108,13 @@ class TestTimestamps:
     def test_timestamp_greater_than_equals(
         self,
         aws_client,
-        create_iam_role_for_sfn,
+        create_state_machine_iam_role,
         create_state_machine,
         sfn_snapshot,
     ):
         create_and_test_comparison_function(
-            aws_client.stepfunctions,
-            create_iam_role_for_sfn,
+            aws_client,
+            create_state_machine_iam_role,
             create_state_machine,
             sfn_snapshot,
             "TimestampGreaterThanEquals",
@@ -136,13 +125,13 @@ class TestTimestamps:
     def test_timestamp_greater_than_equals_path(
         self,
         aws_client,
-        create_iam_role_for_sfn,
+        create_state_machine_iam_role,
         create_state_machine,
         sfn_snapshot,
     ):
         create_and_test_comparison_function(
-            aws_client.stepfunctions,
-            create_iam_role_for_sfn,
+            aws_client,
+            create_state_machine_iam_role,
             create_state_machine,
             sfn_snapshot,
             "TimestampGreaterThanEqualsPath",
@@ -154,13 +143,13 @@ class TestTimestamps:
     def test_timestamp_less_than(
         self,
         aws_client,
-        create_iam_role_for_sfn,
+        create_state_machine_iam_role,
         create_state_machine,
         sfn_snapshot,
     ):
         create_and_test_comparison_function(
-            aws_client.stepfunctions,
-            create_iam_role_for_sfn,
+            aws_client,
+            create_state_machine_iam_role,
             create_state_machine,
             sfn_snapshot,
             "TimestampLessThan",
@@ -171,13 +160,13 @@ class TestTimestamps:
     def test_timestamp_less_than_path(
         self,
         aws_client,
-        create_iam_role_for_sfn,
+        create_state_machine_iam_role,
         create_state_machine,
         sfn_snapshot,
     ):
         create_and_test_comparison_function(
-            aws_client.stepfunctions,
-            create_iam_role_for_sfn,
+            aws_client,
+            create_state_machine_iam_role,
             create_state_machine,
             sfn_snapshot,
             "TimestampLessThanPath",
@@ -189,13 +178,13 @@ class TestTimestamps:
     def test_timestamp_less_than_equals(
         self,
         aws_client,
-        create_iam_role_for_sfn,
+        create_state_machine_iam_role,
         create_state_machine,
         sfn_snapshot,
     ):
         create_and_test_comparison_function(
-            aws_client.stepfunctions,
-            create_iam_role_for_sfn,
+            aws_client,
+            create_state_machine_iam_role,
             create_state_machine,
             sfn_snapshot,
             "TimestampLessThanEquals",
@@ -206,13 +195,13 @@ class TestTimestamps:
     def test_timestamp_less_than_equals_path(
         self,
         aws_client,
-        create_iam_role_for_sfn,
+        create_state_machine_iam_role,
         create_state_machine,
         sfn_snapshot,
     ):
         create_and_test_comparison_function(
-            aws_client.stepfunctions,
-            create_iam_role_for_sfn,
+            aws_client,
+            create_state_machine_iam_role,
             create_state_machine,
             sfn_snapshot,
             "TimestampLessThanEqualsPath",

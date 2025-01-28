@@ -1,28 +1,19 @@
 import json
+import string
 from operator import itemgetter
+from urllib.parse import urlencode
 
 import pytest
 from botocore.exceptions import ClientError
+from localstack_snapshot.snapshots.transformer import SortingTransformer
 
-from localstack import config
-from localstack.testing.aws.util import is_aws_cloud
 from localstack.testing.pytest import markers
-from localstack.testing.snapshots.transformer import SortingTransformer
 from localstack.utils.strings import long_uid, short_uid
+from tests.aws.services.s3.conftest import TEST_S3_IMAGE
 
 
-def is_not_native_provider():
-    return not config.NATIVE_S3_PROVIDER
-
-
-@markers.snapshot.skip_snapshot_verify(
-    condition=is_not_native_provider, paths=["$..ServerSideEncryption"]
-)
 class TestS3BucketCRUD:
     @markers.aws.validated
-    @markers.snapshot.skip_snapshot_verify(
-        condition=is_not_native_provider, paths=["$.delete-with-obj.Error.BucketName"]
-    )
     def test_delete_bucket_with_objects(self, s3_bucket, aws_client, snapshot):
         snapshot.add_transformer(snapshot.transform.s3_api())
         key_name = "test-delete"
@@ -40,14 +31,6 @@ class TestS3BucketCRUD:
         # TODO: write a test with a multipart upload that is not completed?
 
     @markers.aws.validated
-    @markers.snapshot.skip_snapshot_verify(
-        condition=is_not_native_provider,
-        paths=[
-            "$..Error.BucketName",
-            "$..Error.Message",
-            "$.delete-marker-by-version.DeleteMarker",
-        ],
-    )
     def test_delete_versioned_bucket_with_objects(self, s3_bucket, aws_client, snapshot):
         snapshot.add_transformer(snapshot.transform.s3_api())
         # enable versioning on the bucket
@@ -83,15 +66,8 @@ class TestS3BucketCRUD:
         snapshot.match("success-delete-bucket", delete_bucket)
 
 
-@markers.snapshot.skip_snapshot_verify(
-    condition=is_not_native_provider, paths=["$..ServerSideEncryption"]
-)
 class TestS3ObjectCRUD:
     @markers.aws.validated
-    @pytest.mark.xfail(
-        condition=not config.NATIVE_S3_PROVIDER,
-        reason="Moto implementation does not raise exceptions",
-    )
     def test_delete_object(self, s3_bucket, aws_client, snapshot):
         key_name = "test-delete"
         put_object = aws_client.s3.put_object(Bucket=s3_bucket, Key=key_name, Body="test-delete")
@@ -110,10 +86,6 @@ class TestS3ObjectCRUD:
         snapshot.match("delete-nonexistent-object-versionid", e.value.response)
 
     @markers.aws.validated
-    @pytest.mark.xfail(
-        condition=not config.NATIVE_S3_PROVIDER,
-        reason="Moto implementation does not raise exceptions",
-    )
     def test_delete_objects(self, s3_bucket, aws_client, snapshot):
         key_name = "test-delete"
         put_object = aws_client.s3.put_object(Bucket=s3_bucket, Key=key_name, Body="test-delete")
@@ -143,10 +115,6 @@ class TestS3ObjectCRUD:
         snapshot.match("delete-objects", delete_objects)
 
     @markers.aws.validated
-    @pytest.mark.xfail(
-        condition=not config.NATIVE_S3_PROVIDER,
-        reason="Moto implementation does not return proper headers",
-    )
     def test_delete_object_versioned(self, s3_bucket, aws_client, snapshot):
         snapshot.add_transformer(snapshot.transform.s3_api())
         snapshot.add_transformer(snapshot.transform.key_value("ArgumentValue"))
@@ -245,10 +213,6 @@ class TestS3ObjectCRUD:
         snapshot.match("delete-wrong-key", delete_wrong_key)
 
     @markers.aws.validated
-    @pytest.mark.xfail(
-        condition=not config.NATIVE_S3_PROVIDER,
-        reason="Moto implementation does not return right values",
-    )
     def test_delete_objects_versioned(self, s3_bucket, aws_client, snapshot):
         snapshot.add_transformer(snapshot.transform.s3_api())
         snapshot.add_transformer(snapshot.transform.key_value("DeleteMarkerVersionId"))
@@ -325,10 +289,6 @@ class TestS3ObjectCRUD:
         snapshot.match("delete-objects-version-id", delete_objects_marker)
 
     @markers.aws.validated
-    @pytest.mark.xfail(
-        condition=not config.NATIVE_S3_PROVIDER,
-        reason="Moto implementation raises the wrong exception",
-    )
     def test_get_object_with_version_unversioned_bucket(self, s3_bucket, aws_client, snapshot):
         snapshot.add_transformer(snapshot.transform.s3_api())
         key_name = "test-version"
@@ -345,10 +305,6 @@ class TestS3ObjectCRUD:
         snapshot.match("get-obj-with-null-version", get_obj)
 
     @markers.aws.validated
-    @pytest.mark.xfail(
-        condition=not config.NATIVE_S3_PROVIDER,
-        reason="Moto implementation deletes all versions when suspending versioning, when it should keep it",
-    )
     def test_put_object_on_suspended_bucket(self, s3_bucket, aws_client, snapshot):
         snapshot.add_transformer(snapshot.transform.s3_api())
         # enable versioning on the bucket
@@ -396,10 +352,6 @@ class TestS3ObjectCRUD:
         snapshot.match("get-object-current", get_object)
 
     @markers.aws.validated
-    @pytest.mark.xfail(
-        condition=not config.NATIVE_S3_PROVIDER,
-        reason="Moto implementation has the wrong behaviour",
-    )
     def test_delete_object_on_suspended_bucket(self, s3_bucket, aws_client, snapshot):
         snapshot.add_transformer(snapshot.transform.s3_api())
         # enable versioning on the bucket
@@ -445,14 +397,6 @@ class TestS3ObjectCRUD:
         snapshot.match("list-suspended-after-put", list_object_versions)
 
     @markers.aws.validated
-    @markers.snapshot.skip_snapshot_verify(
-        condition=is_not_native_provider,
-        paths=[
-            "$..Delimiter",
-            "$..EncodingType",
-            "$..VersionIdMarker",
-        ],
-    )
     def test_list_object_versions_order_unversioned(self, s3_bucket, aws_client, snapshot):
         snapshot.add_transformer(snapshot.transform.s3_api())
 
@@ -475,10 +419,6 @@ class TestS3ObjectCRUD:
         snapshot.match("list-object-versions", list_object_versions)
 
     @markers.aws.validated
-    @pytest.mark.skipif(
-        condition=config.STREAM_S3_PROVIDER,
-        reason="Range fix not applied in S3 Stream provider due to removal in the near future",
-    )
     def test_get_object_range(self, aws_client, s3_bucket, snapshot):
         content = "0123456789"
         key = "test-key-range"
@@ -524,10 +464,8 @@ class TestS3ObjectCRUD:
         resp = aws_client.s3.get_object(Bucket=s3_bucket, Key=key, Range="bytes=0-1,3-4,7-9")
         snapshot.match("get-multiple-ranges", resp)
 
-        if config.NATIVE_S3_PROVIDER or is_aws_cloud():
-            # FIXME: missing handling in moto for very wrong format of the range header
-            resp = aws_client.s3.get_object(Bucket=s3_bucket, Key=key, Range="0-1")
-            snapshot.match("get-wrong-format", resp)
+        resp = aws_client.s3.get_object(Bucket=s3_bucket, Key=key, Range="0-1")
+        snapshot.match("get-wrong-format", resp)
 
         resp = aws_client.s3.get_object(Bucket=s3_bucket, Key=key, Range="bytes=-")
         snapshot.match("get--", resp)
@@ -540,15 +478,16 @@ class TestS3ObjectCRUD:
             aws_client.s3.get_object(Bucket=s3_bucket, Key=key, Range="bytes=100-200")
         snapshot.match("get-100-200", e.value.response)
 
+        # test that we can still put an object on the same key that failed GetObject with range request
+        put_obj = aws_client.s3.put_object(Bucket=s3_bucket, Key=key, Body=content * 2)
+        snapshot.match("put-after-failed", put_obj)
+
 
 class TestS3Multipart:
     # TODO: write a validated test for UploadPartCopy preconditions
+
     @markers.aws.validated
-    @pytest.mark.xfail(
-        condition=not config.NATIVE_S3_PROVIDER,
-        reason="Moto does not handle the exceptions properly",
-    )
-    @markers.snapshot.skip_snapshot_verify(paths=["$..PartNumberMarker"])  # TODO: invetigate this
+    @markers.snapshot.skip_snapshot_verify(paths=["$..PartNumberMarker"])  # TODO: investigate this
     def test_upload_part_copy_range(self, aws_client, s3_bucket, snapshot):
         snapshot.add_transformer(
             [
@@ -627,13 +566,49 @@ class TestS3Multipart:
                 )
             snapshot.match(f"upload-part-copy-range-exc-{src_range}", e.value.response)
 
+    @markers.aws.validated
+    @markers.snapshot.skip_snapshot_verify(
+        # Not always present depending on the region
+        paths=["$..Owner.DisplayName"],
+    )
+    def test_upload_part_copy_no_copy_source_range(self, aws_client, s3_bucket, snapshot):
+        """
+        upload_part_copy should not require CopySourceRange to be populated
+        """
+
+        snapshot.add_transformer(
+            [
+                snapshot.transform.key_value("Bucket", reference_replacement=False),
+                snapshot.transform.key_value("Location"),
+                snapshot.transform.key_value("UploadId"),
+                snapshot.transform.key_value("DisplayName", reference_replacement=False),
+                snapshot.transform.key_value("ID", reference_replacement=False),
+            ]
+        )
+
+        src_key = "src-key"
+        content = "0123456789"
+        put_src_object = aws_client.s3.put_object(Bucket=s3_bucket, Key=src_key, Body=content)
+        snapshot.match("put-src-object", put_src_object)
+        key = "test-upload-part-copy"
+        create_multipart = aws_client.s3.create_multipart_upload(Bucket=s3_bucket, Key=key)
+        snapshot.match("create-multipart", create_multipart)
+        upload_id = create_multipart["UploadId"]
+
+        copy_source_key = f"{s3_bucket}/{src_key}"
+        parts = []
+        upload_part_copy = aws_client.s3.upload_part_copy(
+            Bucket=s3_bucket, UploadId=upload_id, Key=key, PartNumber=1, CopySource=copy_source_key
+        )
+        snapshot.match("upload-part-copy", upload_part_copy)
+        parts.append({"ETag": upload_part_copy["CopyPartResult"]["ETag"], "PartNumber": 1})
+
+        list_parts = aws_client.s3.list_parts(Bucket=s3_bucket, Key=key, UploadId=upload_id)
+        snapshot.match("list-parts", list_parts)
+
 
 class TestS3BucketVersioning:
     @markers.aws.validated
-    @pytest.mark.xfail(
-        condition=not config.NATIVE_S3_PROVIDER,
-        reason="Moto implementation not raising exceptions",
-    )
     def test_bucket_versioning_crud(self, aws_client, s3_bucket, snapshot):
         snapshot.add_transformer(snapshot.transform.key_value("BucketName"))
         get_versioning_before = aws_client.s3.get_bucket_versioning(Bucket=s3_bucket)
@@ -667,6 +642,12 @@ class TestS3BucketVersioning:
         snapshot.match("put-versioning-suspended-after", put_versioning_suspended_after)
 
         with pytest.raises(ClientError) as e:
+            aws_client.s3.put_bucket_versioning(
+                Bucket=s3_bucket, VersioningConfiguration={"Status": "Disabled"}
+            )
+        snapshot.match("put-versioning-disabled", e.value.response)
+
+        with pytest.raises(ClientError) as e:
             aws_client.s3.put_bucket_versioning(Bucket=s3_bucket, VersioningConfiguration={})
         snapshot.match("put-versioning-empty", e.value.response)
 
@@ -681,13 +662,27 @@ class TestS3BucketVersioning:
             aws_client.s3.get_bucket_versioning(Bucket=fake_bucket)
         snapshot.match("get-versioning-no-bucket", e.value.response)
 
+    @markers.aws.validated
+    def test_object_version_id_format(self, aws_client, s3_bucket, snapshot):
+        snapshot.add_transformer(snapshot.transform.key_value("VersionId"))
+        aws_client.s3.put_bucket_versioning(
+            Bucket=s3_bucket, VersioningConfiguration={"Status": "Enabled"}
+        )
+
+        put_object = aws_client.s3.put_object(Bucket=s3_bucket, Key="test-version-id")
+        snapshot.match("put-object", put_object)
+        version_id = put_object["VersionId"]
+
+        # example version id
+        # gS53zabD7XTvkrwbjMnXlBylVWetO8ym
+        # the conditions under have been tested against more than 100 AWS VersionIds
+        assert len(version_id) == 32
+        letters_and_digits_and_dot = string.ascii_letters + string.digits + "._"
+        assert all(char in letters_and_digits_and_dot for char in version_id)
+
 
 class TestS3BucketEncryption:
     @markers.aws.validated
-    @pytest.mark.xfail(
-        condition=not config.NATIVE_S3_PROVIDER,
-        reason="Moto implementation does not have default encryption",
-    )
     def test_s3_default_bucket_encryption(self, s3_bucket, aws_client, snapshot):
         get_default_encryption = aws_client.s3.get_bucket_encryption(Bucket=s3_bucket)
         snapshot.match("default-bucket-encryption", get_default_encryption)
@@ -702,10 +697,6 @@ class TestS3BucketEncryption:
         snapshot.match("get-bucket-no-encryption", bucket_versioning)
 
     @markers.aws.validated
-    @pytest.mark.xfail(
-        condition=not config.NATIVE_S3_PROVIDER,
-        reason="Moto implementation does not have proper validation",
-    )
     def test_s3_default_bucket_encryption_exc(self, s3_bucket, aws_client, snapshot):
         snapshot.add_transformer(snapshot.transform.s3_api())
         fake_bucket = f"fakebucket-{short_uid()}-{short_uid()}"
@@ -797,14 +788,11 @@ class TestS3BucketEncryption:
         get_object_encrypted = aws_client.s3.get_object(Bucket=s3_bucket, Key=key_name)
         snapshot.match("get-object-encrypted", get_object_encrypted)
 
+    @pytest.mark.skipif(condition=TEST_S3_IMAGE, reason="KMS not enabled in S3 image")
     @markers.aws.validated
     # there is currently no server side encryption is place in LS, ETag will be different
     @markers.snapshot.skip_snapshot_verify(paths=["$..ETag"])
-    @markers.snapshot.skip_snapshot_verify(
-        condition=is_not_native_provider, paths=["$..BucketKeyEnabled"]
-    )
     def test_s3_bucket_encryption_sse_kms(self, s3_bucket, kms_key, aws_client, snapshot):
-
         put_bucket_enc = aws_client.s3.put_bucket_encryption(
             Bucket=s3_bucket,
             ServerSideEncryptionConfiguration={
@@ -860,11 +848,8 @@ class TestS3BucketEncryption:
         )
         snapshot.match("put-object-encrypted-bucket-key-disabled", put_object_encrypted)
 
+    @pytest.mark.skipif(condition=TEST_S3_IMAGE, reason="KMS not enabled in S3 image")
     @markers.aws.validated
-    @pytest.mark.xfail(
-        condition=not config.NATIVE_S3_PROVIDER,
-        reason="Moto implementation does not have S3 KMS managed key",
-    )
     # there is currently no server side encryption is place in LS, ETag will be different
     @markers.snapshot.skip_snapshot_verify(
         paths=[
@@ -909,14 +894,8 @@ class TestS3BucketEncryption:
         snapshot.match("get-object-encrypted", get_object_encrypted)
 
 
-@markers.snapshot.skip_snapshot_verify(
-    condition=is_not_native_provider, paths=["$..ServerSideEncryption"]
-)
 class TestS3BucketObjectTagging:
     @markers.aws.validated
-    @markers.snapshot.skip_snapshot_verify(
-        condition=is_not_native_provider, paths=["$.get-bucket-tags.TagSet[1].Value"]
-    )
     def test_bucket_tagging_crud(self, s3_bucket, aws_client, snapshot):
         snapshot.add_transformer(snapshot.transform.key_value("BucketName"))
         with pytest.raises(ClientError) as e:
@@ -1017,10 +996,6 @@ class TestS3BucketObjectTagging:
         snapshot.match("get-obj-after-tags-deleted", get_object)
 
     @markers.aws.validated
-    @pytest.mark.xfail(
-        condition=not config.NATIVE_S3_PROVIDER,
-        reason="Moto implementation do not catch exceptions",
-    )
     def test_object_tagging_exc(self, s3_bucket, aws_client, snapshot):
         snapshot.add_transformer(snapshot.transform.key_value("BucketName"))
         snapshot.add_transformer(snapshot.transform.regex(s3_bucket, replacement="<bucket:1>"))
@@ -1063,10 +1038,6 @@ class TestS3BucketObjectTagging:
         snapshot.match("put-obj-wrong-format", e.value.response)
 
     @markers.aws.validated
-    @pytest.mark.xfail(
-        condition=not config.NATIVE_S3_PROVIDER,
-        reason="Moto implementation missing versioning implementation",
-    )
     def test_object_tagging_versioned(self, s3_bucket, aws_client, snapshot):
         snapshot.add_transformer(snapshot.transform.key_value("VersionId"))
         aws_client.s3.put_bucket_versioning(
@@ -1074,8 +1045,16 @@ class TestS3BucketObjectTagging:
         )
         object_key = "test-version-tagging"
         version_ids = []
+        v1_tags = {"test_tag": "tagv1"}
         for i in range(2):
-            put_obj = aws_client.s3.put_object(Bucket=s3_bucket, Key=object_key, Body=f"test-{i}")
+            if i == 0:
+                put_obj = aws_client.s3.put_object(
+                    Bucket=s3_bucket, Key=object_key, Body=f"test-{i}", Tagging=urlencode(v1_tags)
+                )
+            else:
+                put_obj = aws_client.s3.put_object(
+                    Bucket=s3_bucket, Key=object_key, Body=f"test-{i}"
+                )
             snapshot.match(f"put-obj-{i}", put_obj)
             version_ids.append(put_obj["VersionId"])
 
@@ -1093,6 +1072,11 @@ class TestS3BucketObjectTagging:
         get_bucket_tags = aws_client.s3.get_object_tagging(Bucket=s3_bucket, Key=object_key)
         snapshot.match("get-object-tags-current-version", get_bucket_tags)
 
+        get_bucket_tags = aws_client.s3.get_object_tagging(
+            Bucket=s3_bucket, Key=object_key, VersionId=version_id_1
+        )
+        snapshot.match("get-object-tags-previous-version", get_bucket_tags)
+
         tag_set_2 = {"TagSet": [{"Key": "tag1", "Value": "tag1"}]}
         # test by specifying a VersionId to Version1
         put_bucket_tags = aws_client.s3.put_object_tagging(
@@ -1104,22 +1088,53 @@ class TestS3BucketObjectTagging:
         get_bucket_tags = aws_client.s3.get_object_tagging(
             Bucket=s3_bucket, Key=object_key, VersionId=version_id_1
         )
-        snapshot.match("get-object-tags-previous-version", get_bucket_tags)
+        snapshot.match("get-object-tags-previous-version-again", get_bucket_tags)
 
         # Put a DeleteMarker on top of the stack
         delete_current = aws_client.s3.delete_object(Bucket=s3_bucket, Key=object_key)
         snapshot.match("put-delete-marker", delete_current)
+        version_id_delete_marker = delete_current["VersionId"]
 
-        # test to put/get tagging on a DeleteMarker
-        put_bucket_tags = aws_client.s3.put_object_tagging(
-            Bucket=s3_bucket, Key=object_key, VersionId=version_id_1, Tagging=tag_set_2
-        )
-        snapshot.match("put-object-tags-delete-marker", put_bucket_tags)
+        # test to put/get tagging on the DeleteMarker
+        with pytest.raises(ClientError) as e:
+            aws_client.s3.put_object_tagging(
+                Bucket=s3_bucket,
+                Key=object_key,
+                VersionId=version_id_delete_marker,
+                Tagging=tag_set_2,
+            )
+        snapshot.match("put-object-tags-delete-marker-id", e.value.response)
 
-        get_bucket_tags = aws_client.s3.get_object_tagging(
-            Bucket=s3_bucket, Key=object_key, VersionId=version_id_1
-        )
-        snapshot.match("get-object-tags-delete-marker", get_bucket_tags)
+        with pytest.raises(ClientError) as e:
+            aws_client.s3.get_object_tagging(
+                Bucket=s3_bucket, Key=object_key, VersionId=version_id_delete_marker
+            )
+        snapshot.match("get-object-tags-delete-marker-id", e.value.response)
+
+        with pytest.raises(ClientError) as e:
+            aws_client.s3.delete_object_tagging(
+                Bucket=s3_bucket, Key=object_key, VersionId=version_id_delete_marker
+            )
+        snapshot.match("delete-object-tags-delete-marker-id", e.value.response)
+
+        # test to put/get tagging on latest version (DeleteMarker)
+        with pytest.raises(ClientError) as e:
+            aws_client.s3.put_object_tagging(Bucket=s3_bucket, Key=object_key, Tagging=tag_set_2)
+        snapshot.match("put-object-tags-delete-marker-latest", e.value.response)
+
+        with pytest.raises(ClientError) as e:
+            aws_client.s3.get_object_tagging(
+                Bucket=s3_bucket,
+                Key=object_key,
+            )
+        snapshot.match("get-object-tags-delete-marker-latest", e.value.response)
+
+        with pytest.raises(ClientError) as e:
+            aws_client.s3.delete_object_tagging(
+                Bucket=s3_bucket,
+                Key=object_key,
+            )
+        snapshot.match("delete-object-tags-delete-marker-latest", e.value.response)
 
     @markers.aws.validated
     def test_put_object_with_tags(self, s3_bucket, aws_client, snapshot):
@@ -1192,10 +1207,6 @@ class TestS3BucketObjectTagging:
         snapshot.match("get-object-after-recreation", get_bucket_tags)
 
     @markers.aws.validated
-    @pytest.mark.xfail(
-        condition=not config.NATIVE_S3_PROVIDER,
-        reason="Moto implementation does not raise exceptions",
-    )
     def test_tagging_validation(self, s3_bucket, aws_client, snapshot):
         object_key = "tagging-validation"
         aws_client.s3.put_object(Bucket=s3_bucket, Key=object_key, Body=b"")
@@ -1279,13 +1290,19 @@ class TestS3BucketObjectTagging:
 
 class TestS3ObjectLock:
     @markers.aws.validated
-    @pytest.mark.xfail(
-        condition=not config.NATIVE_S3_PROVIDER,
-        reason="Moto implementation does not catch exception",
-    )
     def test_put_object_lock_configuration_on_existing_bucket(
         self, s3_bucket, aws_client, snapshot
     ):
+        # this has been updated by AWS:
+        # https://aws.amazon.com/about-aws/whats-new/2023/11/amazon-s3-enabling-object-lock-buckets/
+        # before, S3 buckets had to be created with a specific config to be able to be use S3 Object Lock
+        # however, the bucket needs to be at least versioned
+        snapshot.add_transformer(snapshot.transform.key_value("BucketName"))
+        with pytest.raises(ClientError) as e:
+            aws_client.s3.get_object_lock_configuration(Bucket=s3_bucket)
+
+        snapshot.match("get-object-lock-existing-bucket-no-config", e.value.response)
+
         with pytest.raises(ClientError) as e:
             aws_client.s3.put_object_lock_configuration(
                 Bucket=s3_bucket,
@@ -1293,27 +1310,39 @@ class TestS3ObjectLock:
                     "ObjectLockEnabled": "Enabled",
                 },
             )
-        snapshot.match("put-object-lock-existing-bucket-enabled", e.value.response)
+        snapshot.match("put-object-lock-existing-bucket-no-versioning", e.value.response)
+
+        suspend_versioning = aws_client.s3.put_bucket_versioning(
+            Bucket=s3_bucket, VersioningConfiguration={"Status": "Suspended"}
+        )
+        snapshot.match("suspended-versioning", suspend_versioning)
 
         with pytest.raises(ClientError) as e:
             aws_client.s3.put_object_lock_configuration(
                 Bucket=s3_bucket,
                 ObjectLockConfiguration={
-                    "Rule": {
-                        "DefaultRetention": {
-                            "Mode": "GOVERNANCE",
-                            "Days": 1,
-                        }
-                    }
+                    "ObjectLockEnabled": "Enabled",
                 },
             )
-        snapshot.match("put-object-lock-existing-bucket-rule", e.value.response)
+        snapshot.match("put-object-lock-existing-bucket-versioning-disabled", e.value.response)
+
+        enable_versioning = aws_client.s3.put_bucket_versioning(
+            Bucket=s3_bucket, VersioningConfiguration={"Status": "Enabled"}
+        )
+        snapshot.match("enabled-versioning", enable_versioning)
+
+        put_lock_on_existing_bucket = aws_client.s3.put_object_lock_configuration(
+            Bucket=s3_bucket,
+            ObjectLockConfiguration={
+                "ObjectLockEnabled": "Enabled",
+            },
+        )
+        snapshot.match("put-object-lock-existing-bucket-enabled", put_lock_on_existing_bucket)
+
+        get_lock_on_existing_bucket = aws_client.s3.get_object_lock_configuration(Bucket=s3_bucket)
+        snapshot.match("get-object-lock-existing-bucket-enabled", get_lock_on_existing_bucket)
 
     @markers.aws.validated
-    @markers.snapshot.skip_snapshot_verify(
-        condition=is_not_native_provider,
-        paths=["$.get-lock-config.ObjectLockConfiguration.Rule.DefaultRetention.Years"],
-    )
     def test_get_put_object_lock_configuration(self, s3_create_bucket, aws_client, snapshot):
         s3_bucket = s3_create_bucket(ObjectLockEnabledForBucket=True)
 
@@ -1349,10 +1378,6 @@ class TestS3ObjectLock:
         snapshot.match("get-lock-config-only-enabled", get_lock_config)
 
     @markers.aws.validated
-    @pytest.mark.xfail(
-        condition=not config.NATIVE_S3_PROVIDER,
-        reason="Moto implementation does not catch exception",
-    )
     def test_put_object_lock_configuration_exc(self, s3_create_bucket, aws_client, snapshot):
         s3_bucket = s3_create_bucket(ObjectLockEnabledForBucket=True)
         with pytest.raises(ClientError) as e:
@@ -1423,9 +1448,6 @@ class TestS3ObjectLock:
         snapshot.match("put-lock-config-both-days-years", e.value.response)
 
     @markers.aws.validated
-    @markers.snapshot.skip_snapshot_verify(
-        condition=is_not_native_provider, paths=["$..Error.BucketName"]
-    )
     def test_get_object_lock_configuration_exc(self, s3_bucket, aws_client, snapshot):
         snapshot.add_transformer(snapshot.transform.key_value("BucketName"))
         with pytest.raises(ClientError) as e:
@@ -1437,20 +1459,24 @@ class TestS3ObjectLock:
         snapshot.match("get-lock-config-bucket-not-exists", e.value.response)
 
     @markers.aws.validated
-    @pytest.mark.xfail(
-        condition=not config.NATIVE_S3_PROVIDER,
-        reason="Moto implementation does not raise exceptions",
-    )
     def test_disable_versioning_on_locked_bucket(self, s3_create_bucket, aws_client, snapshot):
-        s3_bucket = s3_create_bucket(ObjectLockEnabledForBucket=True)
+        bucket_name = s3_create_bucket(ObjectLockEnabledForBucket=True)
         with pytest.raises(ClientError) as e:
             aws_client.s3.put_bucket_versioning(
-                Bucket=s3_bucket,
+                Bucket=bucket_name,
                 VersioningConfiguration={
                     "Status": "Suspended",
                 },
             )
         snapshot.match("disable-versioning-on-locked-bucket", e.value.response)
+
+        put_bucket_versioning_again = aws_client.s3.put_bucket_versioning(
+            Bucket=bucket_name,
+            VersioningConfiguration={
+                "Status": "Enabled",
+            },
+        )
+        snapshot.match("enable-versioning-again-on-locked-bucket", put_bucket_versioning_again)
 
     @markers.aws.validated
     def test_delete_object_with_no_locking(self, s3_bucket, aws_client, snapshot):
@@ -1474,10 +1500,6 @@ class TestS3ObjectLock:
 
 class TestS3BucketOwnershipControls:
     @markers.aws.validated
-    @pytest.mark.xfail(
-        condition=not config.NATIVE_S3_PROVIDER,
-        reason="Moto implementation does not have default ownership controls",
-    )
     def test_crud_bucket_ownership_controls(self, s3_create_bucket, aws_client, snapshot):
         snapshot.add_transformer(snapshot.transform.key_value("BucketName"))
         default_s3_bucket = s3_create_bucket()
@@ -1510,10 +1532,6 @@ class TestS3BucketOwnershipControls:
         snapshot.match("get-ownership-at-creation", get_ownership_at_creation)
 
     @markers.aws.validated
-    @pytest.mark.xfail(
-        condition=not config.NATIVE_S3_PROVIDER,
-        reason="Moto implementation does not have default ownership controls",
-    )
     def test_bucket_ownership_controls_exc(self, s3_create_bucket, aws_client, snapshot):
         default_s3_bucket = s3_create_bucket()
         get_default_ownership = aws_client.s3.get_bucket_ownership_controls(
@@ -1557,10 +1575,6 @@ class TestS3BucketOwnershipControls:
 
 class TestS3PublicAccessBlock:
     @markers.aws.validated
-    @pytest.mark.xfail(
-        condition=not config.NATIVE_S3_PROVIDER,
-        reason="Moto implementation does not have default public access block",
-    )
     def test_crud_public_access_block(self, s3_bucket, aws_client, snapshot):
         snapshot.add_transformer(snapshot.transform.key_value("BucketName"))
         get_public_access_block = aws_client.s3.get_public_access_block(Bucket=s3_bucket)
@@ -1631,11 +1645,10 @@ class TestS3BucketPolicy:
             aws_client.s3.get_bucket_policy(Bucket=s3_bucket)
         snapshot.match("get-bucket-policy-after-delete", e.value.response)
 
+        response = aws_client.s3.delete_bucket_policy(Bucket=s3_bucket)
+        snapshot.match("delete-bucket-policy-after-delete", response)
+
     @markers.aws.validated
-    @pytest.mark.xfail(
-        condition=not config.NATIVE_S3_PROVIDER,
-        reason="Moto implementation does not raise Exception",
-    )
     def test_bucket_policy_exc(self, s3_bucket, snapshot, aws_client):
         # delete the OwnershipControls so that we can set a Policy
         aws_client.s3.delete_bucket_ownership_controls(Bucket=s3_bucket)
@@ -1679,13 +1692,6 @@ class TestS3BucketAccelerateConfiguration:
         snapshot.match("get-bucket-accelerate-config-disabled", response)
 
     @markers.aws.validated
-    @markers.snapshot.skip_snapshot_verify(
-        condition=is_not_native_provider,
-        paths=[
-            "$.put-bucket-accelerate-config-dot-bucket.Error.Code",
-            "$.put-bucket-accelerate-config-dot-bucket.Error.Message",
-        ],
-    )
     def test_bucket_acceleration_configuration_exc(
         self, s3_bucket, s3_create_bucket, snapshot, aws_client
     ):
@@ -1710,3 +1716,467 @@ class TestS3BucketAccelerateConfiguration:
                 AccelerateConfiguration={"Status": "random"},
             )
         snapshot.match("put-bucket-accelerate-config-dot-bucket", e.value.response)
+
+
+class TestS3ObjectWritePrecondition:
+    """
+    https://docs.aws.amazon.com/AmazonS3/latest/userguide/conditional-writes.html
+    """
+
+    @pytest.fixture(autouse=True)
+    def add_snapshot_transformers(self, snapshot):
+        snapshot.add_transformers_list(
+            [
+                snapshot.transform.key_value("Bucket"),
+                snapshot.transform.key_value("UploadId"),
+                snapshot.transform.key_value("VersionId"),
+                snapshot.transform.key_value("DisplayName"),
+                snapshot.transform.key_value("ID"),
+                snapshot.transform.key_value("Name"),
+            ]
+        )
+        snapshot.add_transformer(snapshot.transform.key_value("Location"), priority=-1)
+
+    @markers.aws.validated
+    def test_put_object_if_none_match(self, s3_bucket, aws_client, snapshot):
+        key = "test-precondition"
+        put_obj = aws_client.s3.put_object(Bucket=s3_bucket, Key=key, IfNoneMatch="*")
+        snapshot.match("put-obj", put_obj)
+
+        with pytest.raises(ClientError) as e:
+            aws_client.s3.put_object(Bucket=s3_bucket, Key=key, IfNoneMatch="*")
+        snapshot.match("put-obj-if-none-match", e.value.response)
+
+        del_obj = aws_client.s3.delete_object(Bucket=s3_bucket, Key=key)
+        snapshot.match("del-obj", del_obj)
+
+        put_obj_after_del = aws_client.s3.put_object(Bucket=s3_bucket, Key=key, IfNoneMatch="*")
+        snapshot.match("put-obj-after-del", put_obj_after_del)
+
+    @markers.aws.validated
+    def test_put_object_if_none_match_validation(self, s3_bucket, aws_client, snapshot):
+        key = "test-precondition-validation"
+        put_obj = aws_client.s3.put_object(Bucket=s3_bucket, Key=key)
+        snapshot.match("put-obj", put_obj)
+        obj_etag = put_obj["ETag"]
+
+        with pytest.raises(ClientError) as e:
+            aws_client.s3.put_object(Bucket=s3_bucket, Key=key, IfNoneMatch=obj_etag)
+        snapshot.match("put-obj-if-none-match-bad-value", e.value.response)
+
+    @markers.aws.validated
+    def test_multipart_if_none_match_with_delete(self, s3_bucket, aws_client, snapshot):
+        key = "test-precondition"
+        put_obj = aws_client.s3.put_object(Bucket=s3_bucket, Key=key, IfNoneMatch="*")
+        snapshot.match("put-obj", put_obj)
+
+        create_multipart = aws_client.s3.create_multipart_upload(Bucket=s3_bucket, Key=key)
+        snapshot.match("create-multipart", create_multipart)
+        upload_id = create_multipart["UploadId"]
+
+        upload_part = aws_client.s3.upload_part(
+            Bucket=s3_bucket, Key=key, UploadId=upload_id, Body="test", PartNumber=1
+        )
+        parts = [{"ETag": upload_part["ETag"], "PartNumber": 1}]
+
+        with pytest.raises(ClientError) as e:
+            aws_client.s3.complete_multipart_upload(
+                Bucket=s3_bucket,
+                Key=key,
+                MultipartUpload={"Parts": parts},
+                UploadId=upload_id,
+                IfNoneMatch="*",
+            )
+        snapshot.match("complete-multipart-if-none-match", e.value.response)
+
+        del_obj = aws_client.s3.delete_object(Bucket=s3_bucket, Key=key)
+        snapshot.match("del-obj", del_obj)
+
+        # the previous DeleteObject request was done between the CreateMultipartUpload and completion, so it takes
+        # precedence
+        # you need to restart the whole multipart for it to work
+
+        with pytest.raises(ClientError) as e:
+            aws_client.s3.complete_multipart_upload(
+                Bucket=s3_bucket,
+                Key=key,
+                MultipartUpload={"Parts": parts},
+                UploadId=upload_id,
+                IfNoneMatch="*",
+            )
+        snapshot.match("complete-multipart-after-del", e.value.response)
+
+        create_multipart = aws_client.s3.create_multipart_upload(Bucket=s3_bucket, Key=key)
+        upload_id = create_multipart["UploadId"]
+
+        upload_part = aws_client.s3.upload_part(
+            Bucket=s3_bucket, Key=key, UploadId=upload_id, Body="test", PartNumber=1
+        )
+        parts = [{"ETag": upload_part["ETag"], "PartNumber": 1}]
+        complete_multipart = aws_client.s3.complete_multipart_upload(
+            Bucket=s3_bucket,
+            Key=key,
+            MultipartUpload={"Parts": parts},
+            UploadId=upload_id,
+            IfNoneMatch="*",
+        )
+        snapshot.match("complete-multipart-after-del-restart", complete_multipart)
+
+    @markers.aws.validated
+    def test_multipart_if_none_match_with_put(self, s3_bucket, aws_client, snapshot):
+        key = "test-precondition"
+
+        create_multipart = aws_client.s3.create_multipart_upload(Bucket=s3_bucket, Key=key)
+        snapshot.match("create-multipart", create_multipart)
+        upload_id = create_multipart["UploadId"]
+
+        upload_part = aws_client.s3.upload_part(
+            Bucket=s3_bucket, Key=key, UploadId=upload_id, Body="test", PartNumber=1
+        )
+        parts = [{"ETag": upload_part["ETag"], "PartNumber": 1}]
+
+        put_obj = aws_client.s3.put_object(Bucket=s3_bucket, Key=key, IfNoneMatch="*")
+        snapshot.match("put-obj", put_obj)
+
+        with pytest.raises(ClientError) as e:
+            aws_client.s3.complete_multipart_upload(
+                Bucket=s3_bucket,
+                Key=key,
+                MultipartUpload={"Parts": parts},
+                UploadId=upload_id,
+                IfNoneMatch="*",
+            )
+        snapshot.match("complete-multipart-if-none-match-put-during", e.value.response)
+
+    @markers.aws.validated
+    def test_put_object_if_none_match_versioned_bucket(self, s3_bucket, aws_client, snapshot):
+        #  For buckets with versioning enabled, S3 checks for the presence of a current object version with the same
+        #  name as part of the conditional evaluation. If there is no current object version with the same name, or
+        #  if the current object version is a delete marker, then the write operation succeeds.
+        aws_client.s3.put_bucket_versioning(
+            Bucket=s3_bucket, VersioningConfiguration={"Status": "Enabled"}
+        )
+        key = "test-precondition"
+        put_obj = aws_client.s3.put_object(Bucket=s3_bucket, Key=key, IfNoneMatch="*")
+        snapshot.match("put-obj", put_obj)
+
+        with pytest.raises(ClientError) as e:
+            aws_client.s3.put_object(Bucket=s3_bucket, Key=key, IfNoneMatch="*")
+        snapshot.match("put-obj-if-none-match", e.value.response)
+
+        del_obj = aws_client.s3.delete_object(Bucket=s3_bucket, Key=key)
+        snapshot.match("del-obj", del_obj)
+
+        # if the last object is a delete marker, then we can use IfNoneMatch
+        put_obj_after_del = aws_client.s3.put_object(Bucket=s3_bucket, Key=key, IfNoneMatch="*")
+        snapshot.match("put-obj-after-del", put_obj_after_del)
+
+        list_object_versions = aws_client.s3.list_object_versions(Bucket=s3_bucket)
+        snapshot.match("list-object-versions", list_object_versions)
+
+    @markers.aws.validated
+    def test_put_object_if_match(self, s3_bucket, aws_client, snapshot):
+        key = "test-precondition"
+        put_obj = aws_client.s3.put_object(Bucket=s3_bucket, Key=key, Body="test")
+        snapshot.match("put-obj", put_obj)
+        etag = put_obj["ETag"]
+
+        with pytest.raises(ClientError) as e:
+            # empty object is provided
+            aws_client.s3.put_object(
+                Bucket=s3_bucket, Key=key, IfMatch="d41d8cd98f00b204e9800998ecf8427e"
+            )
+        snapshot.match("put-obj-if-match-wrong-etag", e.value.response)
+
+        put_obj_overwrite = aws_client.s3.put_object(Bucket=s3_bucket, Key=key, IfMatch=etag)
+        snapshot.match("put-obj-overwrite", put_obj_overwrite)
+
+        del_obj = aws_client.s3.delete_object(Bucket=s3_bucket, Key=key)
+        snapshot.match("del-obj", del_obj)
+
+        with pytest.raises(ClientError) as e:
+            aws_client.s3.put_object(Bucket=s3_bucket, Key=key, IfMatch=etag)
+        snapshot.match("put-obj-if-match-key-not-exists", e.value.response)
+
+        put_obj_after_del = aws_client.s3.put_object(Bucket=s3_bucket, Key=key)
+        snapshot.match("put-obj-after-del", put_obj_after_del)
+
+    @markers.aws.validated
+    def test_put_object_if_match_validation(self, s3_bucket, aws_client, snapshot):
+        key = "test-precondition-validation"
+
+        with pytest.raises(ClientError) as e:
+            aws_client.s3.put_object(Bucket=s3_bucket, Key=key, IfMatch="*")
+        snapshot.match("put-obj-if-match-star-value", e.value.response)
+
+        with pytest.raises(ClientError) as e:
+            aws_client.s3.put_object(Bucket=s3_bucket, Key=key, IfMatch="abcdef")
+        snapshot.match("put-obj-if-match-bad-value", e.value.response)
+
+        with pytest.raises(ClientError) as e:
+            aws_client.s3.put_object(Bucket=s3_bucket, Key=key, IfMatch="bad-char_/")
+        snapshot.match("put-obj-if-match-bad-value-2", e.value.response)
+
+    @markers.aws.validated
+    def test_multipart_if_match_with_put(self, s3_bucket, aws_client, snapshot):
+        key = "test-precondition"
+        put_obj = aws_client.s3.put_object(Bucket=s3_bucket, Key=key, Body="test")
+        snapshot.match("put-obj", put_obj)
+        put_obj_etag_1 = put_obj["ETag"]
+
+        create_multipart = aws_client.s3.create_multipart_upload(Bucket=s3_bucket, Key=key)
+        snapshot.match("create-multipart", create_multipart)
+        upload_id = create_multipart["UploadId"]
+
+        upload_part = aws_client.s3.upload_part(
+            Bucket=s3_bucket, Key=key, UploadId=upload_id, Body="test", PartNumber=1
+        )
+        parts = [{"ETag": upload_part["ETag"], "PartNumber": 1}]
+
+        put_obj_2 = aws_client.s3.put_object(Bucket=s3_bucket, Key=key, Body="test2")
+        snapshot.match("put-obj-during", put_obj_2)
+        put_obj_etag_2 = put_obj_2["ETag"]
+
+        with pytest.raises(ClientError) as e:
+            aws_client.s3.complete_multipart_upload(
+                Bucket=s3_bucket,
+                Key=key,
+                MultipartUpload={"Parts": parts},
+                UploadId=upload_id,
+                IfMatch=put_obj_etag_1,
+            )
+        snapshot.match("complete-multipart-if-match-put-before", e.value.response)
+
+        # the previous PutObject request was done between the CreateMultipartUpload and completion, so it takes
+        # precedence
+        # you need to restart the whole multipart for it to work
+        with pytest.raises(ClientError) as e:
+            aws_client.s3.complete_multipart_upload(
+                Bucket=s3_bucket,
+                Key=key,
+                MultipartUpload={"Parts": parts},
+                UploadId=upload_id,
+                IfMatch=put_obj_etag_2,
+            )
+        snapshot.match("complete-multipart-if-match-put-during", e.value.response)
+
+        create_multipart = aws_client.s3.create_multipart_upload(Bucket=s3_bucket, Key=key)
+        snapshot.match("create-multipart-again", create_multipart)
+        upload_id = create_multipart["UploadId"]
+
+        upload_part = aws_client.s3.upload_part(
+            Bucket=s3_bucket, Key=key, UploadId=upload_id, Body="test", PartNumber=1
+        )
+        parts = [{"ETag": upload_part["ETag"], "PartNumber": 1}]
+
+        complete_multipart = aws_client.s3.complete_multipart_upload(
+            Bucket=s3_bucket,
+            Key=key,
+            MultipartUpload={"Parts": parts},
+            UploadId=upload_id,
+            IfMatch=put_obj_etag_2,
+        )
+        snapshot.match("complete-multipart-if-match-put-before-restart", complete_multipart)
+
+    @markers.aws.validated
+    def test_multipart_if_match_with_put_identical(self, s3_bucket, aws_client, snapshot):
+        key = "test-precondition"
+        put_obj = aws_client.s3.put_object(Bucket=s3_bucket, Key=key, Body="test")
+        snapshot.match("put-obj", put_obj)
+        put_obj_etag_1 = put_obj["ETag"]
+
+        create_multipart = aws_client.s3.create_multipart_upload(Bucket=s3_bucket, Key=key)
+        snapshot.match("create-multipart", create_multipart)
+        upload_id = create_multipart["UploadId"]
+
+        upload_part = aws_client.s3.upload_part(
+            Bucket=s3_bucket, Key=key, UploadId=upload_id, Body="test", PartNumber=1
+        )
+        parts = [{"ETag": upload_part["ETag"], "PartNumber": 1}]
+
+        put_obj_2 = aws_client.s3.put_object(Bucket=s3_bucket, Key=key, Body="test")
+        snapshot.match("put-obj-during", put_obj_2)
+        # same ETag as first put
+        put_obj_etag_2 = put_obj_2["ETag"]
+        assert put_obj_etag_1 == put_obj_etag_2
+
+        # it seems that even if we overwrite the object with the same content, S3 will still reject the request if a
+        # write operation was done between creation and completion of the multipart upload, like the `Delete`
+        # counterpart of `IfNoneMatch`
+
+        with pytest.raises(ClientError) as e:
+            aws_client.s3.complete_multipart_upload(
+                Bucket=s3_bucket,
+                Key=key,
+                MultipartUpload={"Parts": parts},
+                UploadId=upload_id,
+                IfMatch=put_obj_etag_2,
+            )
+        snapshot.match("complete-multipart-if-match-put-during", e.value.response)
+        # the previous PutObject request was done between the CreateMultipartUpload and completion, so it takes
+        # precedence
+        # you need to restart the whole multipart for it to work
+
+        create_multipart = aws_client.s3.create_multipart_upload(Bucket=s3_bucket, Key=key)
+        snapshot.match("create-multipart-again", create_multipart)
+        upload_id = create_multipart["UploadId"]
+
+        upload_part = aws_client.s3.upload_part(
+            Bucket=s3_bucket, Key=key, UploadId=upload_id, Body="test", PartNumber=1
+        )
+        parts = [{"ETag": upload_part["ETag"], "PartNumber": 1}]
+
+        complete_multipart = aws_client.s3.complete_multipart_upload(
+            Bucket=s3_bucket,
+            Key=key,
+            MultipartUpload={"Parts": parts},
+            UploadId=upload_id,
+            IfMatch=put_obj_etag_2,
+        )
+        snapshot.match("complete-multipart-if-match-put-before-restart", complete_multipart)
+
+    @markers.aws.validated
+    def test_multipart_if_match_with_delete(self, s3_bucket, aws_client, snapshot):
+        key = "test-precondition"
+        put_obj = aws_client.s3.put_object(Bucket=s3_bucket, Key=key, Body="test")
+        snapshot.match("put-obj", put_obj)
+        obj_etag = put_obj["ETag"]
+
+        create_multipart = aws_client.s3.create_multipart_upload(Bucket=s3_bucket, Key=key)
+        snapshot.match("create-multipart", create_multipart)
+        upload_id = create_multipart["UploadId"]
+
+        upload_part = aws_client.s3.upload_part(
+            Bucket=s3_bucket, Key=key, UploadId=upload_id, Body="test", PartNumber=1
+        )
+        parts = [{"ETag": upload_part["ETag"], "PartNumber": 1}]
+
+        del_obj = aws_client.s3.delete_object(Bucket=s3_bucket, Key=key)
+        snapshot.match("del-obj", del_obj)
+
+        with pytest.raises(ClientError) as e:
+            aws_client.s3.complete_multipart_upload(
+                Bucket=s3_bucket,
+                Key=key,
+                MultipartUpload={"Parts": parts},
+                UploadId=upload_id,
+                IfMatch=obj_etag,
+            )
+        snapshot.match("complete-multipart-after-del", e.value.response)
+
+        put_obj_2 = aws_client.s3.put_object(Bucket=s3_bucket, Key=key, Body="test")
+        snapshot.match("put-obj-2", put_obj_2)
+        obj_etag_2 = put_obj_2["ETag"]
+
+        with pytest.raises(ClientError) as e:
+            # even if we recreated the object, it still fails as it was done after the start of the upload
+            aws_client.s3.complete_multipart_upload(
+                Bucket=s3_bucket,
+                Key=key,
+                MultipartUpload={"Parts": parts},
+                UploadId=upload_id,
+                IfMatch=obj_etag_2,
+            )
+        snapshot.match("complete-multipart-if-match-after-put", e.value.response)
+
+    @markers.aws.validated
+    def test_put_object_if_match_versioned_bucket(self, s3_bucket, aws_client, snapshot):
+        aws_client.s3.put_bucket_versioning(
+            Bucket=s3_bucket, VersioningConfiguration={"Status": "Enabled"}
+        )
+        key = "test-precondition"
+        put_obj = aws_client.s3.put_object(Bucket=s3_bucket, Key=key, Body="test")
+        snapshot.match("put-obj", put_obj)
+        put_obj_etag_1 = put_obj["ETag"]
+
+        with pytest.raises(ClientError) as e:
+            aws_client.s3.put_object(Bucket=s3_bucket, Key=key, IfMatch="abcdef")
+        snapshot.match("put-obj-if-none-match-bad-value", e.value.response)
+
+        del_obj = aws_client.s3.delete_object(Bucket=s3_bucket, Key=key)
+        snapshot.match("del-obj", del_obj)
+
+        # if the last object is a delete marker, then we can't use IfMatch
+        with pytest.raises(ClientError) as e:
+            aws_client.s3.put_object(Bucket=s3_bucket, Key=key, IfMatch=put_obj_etag_1)
+        snapshot.match("put-obj-after-del-exc", e.value.response)
+
+        put_obj_2 = aws_client.s3.put_object(Bucket=s3_bucket, Key=key, Body="test-after-del")
+        snapshot.match("put-obj-after-del", put_obj_2)
+        put_obj_etag_2 = put_obj_2["ETag"]
+
+        put_obj_3 = aws_client.s3.put_object(
+            Bucket=s3_bucket, Key=key, Body="test-if-match", IfMatch=put_obj_etag_2
+        )
+        snapshot.match("put-obj-if-match", put_obj_3)
+
+        list_object_versions = aws_client.s3.list_object_versions(Bucket=s3_bucket)
+        snapshot.match("list-object-versions", list_object_versions)
+
+    @markers.aws.validated
+    def test_put_object_if_match_and_if_none_match_validation(
+        self, s3_bucket, aws_client, snapshot
+    ):
+        key = "test-precondition-validation"
+
+        with pytest.raises(ClientError) as e:
+            aws_client.s3.put_object(Bucket=s3_bucket, Key=key, IfNoneMatch="*", IfMatch="abcdef")
+        snapshot.match("put-obj-both-precondition", e.value.response)
+
+    @markers.aws.validated
+    def test_multipart_if_match_etag(self, s3_bucket, aws_client, snapshot):
+        key = "test-precondition"
+        put_obj = aws_client.s3.put_object(Bucket=s3_bucket, Key=key, Body="test")
+        snapshot.match("put-obj", put_obj)
+        put_obj_etag_1 = put_obj["ETag"]
+
+        create_multipart = aws_client.s3.create_multipart_upload(Bucket=s3_bucket, Key=key)
+        snapshot.match("create-multipart", create_multipart)
+        upload_id = create_multipart["UploadId"]
+
+        upload_part = aws_client.s3.upload_part(
+            Bucket=s3_bucket, Key=key, UploadId=upload_id, Body="test", PartNumber=1
+        )
+        parts = [{"ETag": upload_part["ETag"], "PartNumber": 1}]
+
+        complete_multipart_1 = aws_client.s3.complete_multipart_upload(
+            Bucket=s3_bucket,
+            Key=key,
+            MultipartUpload={"Parts": parts},
+            UploadId=upload_id,
+            IfMatch=put_obj_etag_1,
+        )
+        snapshot.match("complete-multipart-if-match", complete_multipart_1)
+
+        multipart_etag = complete_multipart_1["ETag"]
+        # those are different, because multipart etag contains the amount of parts and is the hash of the hashes of the
+        # part
+        assert put_obj_etag_1 != multipart_etag
+
+        create_multipart = aws_client.s3.create_multipart_upload(Bucket=s3_bucket, Key=key)
+        snapshot.match("create-multipart-overwrite", create_multipart)
+        upload_id = create_multipart["UploadId"]
+
+        upload_part = aws_client.s3.upload_part(
+            Bucket=s3_bucket, Key=key, UploadId=upload_id, Body="test", PartNumber=1
+        )
+        parts = [{"ETag": upload_part["ETag"], "PartNumber": 1}]
+
+        with pytest.raises(ClientError) as e:
+            aws_client.s3.complete_multipart_upload(
+                Bucket=s3_bucket,
+                Key=key,
+                MultipartUpload={"Parts": parts},
+                UploadId=upload_id,
+                IfMatch=put_obj_etag_1,
+            )
+        snapshot.match("complete-multipart-if-match-true-etag", e.value.response)
+
+        complete_multipart_1 = aws_client.s3.complete_multipart_upload(
+            Bucket=s3_bucket,
+            Key=key,
+            MultipartUpload={"Parts": parts},
+            UploadId=upload_id,
+            IfMatch=multipart_etag,
+        )
+        snapshot.match("complete-multipart-if-match-overwrite-multipart", complete_multipart_1)

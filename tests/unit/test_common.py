@@ -430,8 +430,6 @@ class TestCommonFileOperations:
         assert not fp.exists()
 
     def test_cp_r(self, tmp_path):
-        pytest.skip("this test does not work on python3.7 due to an issue shutil used by cp_r")
-
         source = tmp_path / "source"
         target = tmp_path / "target"
 
@@ -489,7 +487,8 @@ class TestCommonFileOperations:
 
     def test_unzip_bad_crc(self):
         """Test unzipping of files with incorrect CRC codes - usually works with native `unzip` command,
-        but seems to fail with zipfile module under certain Python versions (extracts 0-bytes files)"""
+        but seems to fail with zipfile module under certain Python versions (extracts 0-bytes files)
+        """
 
         # base64-encoded zip file with a single entry with incorrect CRC (created by Node.js 18 / Serverless)
         zip_base64 = """
@@ -585,9 +584,12 @@ class TestExternalServicePortsManager:
     def test_reserve_port_all_reserved(
         self, external_service_ports_manager: ExternalServicePortsManager
     ):
-        external_service_ports_manager.reserve_port()
-        external_service_ports_manager.reserve_port()
+        # the external service ports manager fixture only has 2 ports available,
+        # reserving 3 has to raise an error, but this could also happen earlier
+        # (if one of the ports is blocked by something else, like a previous test)
         with pytest.raises(PortNotAvailableException):
+            external_service_ports_manager.reserve_port()
+            external_service_ports_manager.reserve_port()
             external_service_ports_manager.reserve_port()
 
     def test_reserve_same_port_twice(

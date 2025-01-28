@@ -95,7 +95,7 @@ def setup_email_addresses(ses_verify_identity):
     def inner(
         sender_email_address: Optional[str] = None, recipient_email_address: Optional[str] = None
     ) -> Tuple[str, str]:
-        if os.getenv("TEST_TARGET") == "AWS_CLOUD":
+        if is_aws_cloud():
             if sender_email_address is None:
                 raise ValueError(
                     "sender_email_address must be specified to run this test against AWS"
@@ -125,7 +125,7 @@ def setup_sender_email_address(ses_verify_identity):
     """
 
     def inner(sender_email_address: Optional[str] = None) -> str:
-        if os.getenv("TEST_TARGET") == "AWS_CLOUD":
+        if is_aws_cloud():
             if sender_email_address is None:
                 raise ValueError(
                     "sender_email_address must be specified to run this test against AWS"
@@ -260,6 +260,9 @@ class TestSES:
         self, create_template, aws_client, snapshot, setup_email_addresses
     ):
         # Ensure all email send operations correctly update the `sent` email counter
+        snapshot.add_transformer(
+            snapshot.transform.key_value("SentLast24Hours", reference_replacement=False),
+        )
 
         def _assert_sent_quota(expected_counter: int) -> dict:
             _send_quota = aws_client.ses.get_send_quota()
@@ -803,7 +806,6 @@ class TestSES:
         snapshot.match("delete-error", e_info.value.response)
 
     @markers.aws.validated
-    @markers.snapshot.skip_snapshot_verify(paths=["$..Error.Type"])
     @pytest.mark.parametrize(
         "tag_name,tag_value",
         [
@@ -842,7 +844,38 @@ class TestSES:
             )
         snapshot.match("response", e.value.response)
 
+    @markers.aws.validated
+    @pytest.mark.parametrize(
+        "tag_name,tag_value",
+        [
+            ("ses:feedback-id-a", "this-marketing-campaign"),
+            ("ses:feedback-id-b", "that-campaign"),
+        ],
+    )
+    def test_special_tags_send_email(self, tag_name, tag_value, aws_client):
+        source = f"user-{short_uid()}@example.com"
+        destination = "success@example.com"
 
+        # Ensure that request passes validation and throws MessageRejected instead
+        with pytest.raises(ClientError) as exc:
+            aws_client.ses.send_email(
+                Source=source,
+                Tags=[
+                    {
+                        "Name": tag_name,
+                        "Value": tag_value,
+                    }
+                ],
+                Message=SAMPLE_SIMPLE_EMAIL,
+                Destination={
+                    "ToAddresses": [destination],
+                },
+            )
+
+        assert exc.match("MessageRejected")
+
+
+@pytest.mark.usefixtures("openapi_validate")
 class TestSESRetrospection:
     @markers.aws.only_localstack
     def test_send_email_can_retrospect(self, aws_client):
@@ -902,7 +935,7 @@ class TestSESRetrospection:
         assert "Body" not in contents2
 
         # Ensure all sent messages can be retrieved using the API endpoint
-        emails_url = config.get_edge_url() + EMAILS_ENDPOINT
+        emails_url = config.internal_service_url() + EMAILS_ENDPOINT
         api_contents = []
         api_contents.extend(requests.get(emails_url + f"?id={message1_id}").json()["messages"])
         api_contents.extend(requests.get(emails_url + f"?id={message2_id}").json()["messages"])
@@ -914,12 +947,12 @@ class TestSESRetrospection:
         assert api_contents[message2_id] == contents2
 
         # Ensure messages can be filtered by email source via the REST endpoint
-        emails_url = config.get_edge_url() + EMAILS_ENDPOINT + "?email=none@example.com"
+        emails_url = config.internal_service_url() + EMAILS_ENDPOINT + "?email=none@example.com"
         assert len(requests.get(emails_url).json()["messages"]) == 0
-        emails_url = config.get_edge_url() + EMAILS_ENDPOINT + f"?email={email}"
+        emails_url = config.internal_service_url() + EMAILS_ENDPOINT + f"?email={email}"
         assert len(requests.get(emails_url).json()["messages"]) == 2
 
-        emails_url = config.get_edge_url() + EMAILS_ENDPOINT
+        emails_url = config.internal_service_url() + EMAILS_ENDPOINT
         assert requests.delete(emails_url + f"?id={message1_id}").status_code == 204
         assert requests.delete(emails_url + f"?id={message2_id}").status_code == 204
         assert requests.get(emails_url).json() == {"messages": []}
@@ -957,7 +990,7 @@ class TestSESRetrospection:
         assert '{"A key": "A value"}' == contents["TemplateData"]
         assert ["success@example.com"] == contents["Destination"]["ToAddresses"]
 
-        api_contents = requests.get("http://localhost:4566/_localstack/ses").json()
+        api_contents = requests.get("http://localhost:4566/_aws/ses").json()
         api_contents = {msg["Id"]: msg for msg in api_contents["messages"]}
         assert message_id in api_contents
         assert api_contents[message_id] == contents

@@ -1,6 +1,8 @@
 import json
 import os
 
+import pytest
+
 from localstack import config
 from localstack.testing.aws.util import is_aws_cloud
 from localstack.testing.pytest import markers
@@ -48,28 +50,25 @@ def test_stream_creation(deploy_cfn_template, snapshot, aws_client):
     snapshot.match("stream_description", description)
 
 
-@markers.aws.unknown
-def test_default_parameters_kinesis(deploy_cfn_template, aws_client):
+@markers.aws.validated
+@markers.snapshot.skip_snapshot_verify(paths=["$..StreamDescription.StreamModeDetails"])
+def test_default_parameters_kinesis(deploy_cfn_template, aws_client, snapshot):
     stack = deploy_cfn_template(
         template_path=os.path.join(
             os.path.dirname(__file__), "../../../templates/kinesis_default.yaml"
         )
     )
 
-    stream_response = aws_client.kinesis.list_streams(ExclusiveStartStreamName=stack.stack_name)
+    stream_name = stack.outputs["KinesisStreamName"]
+    rs = aws_client.kinesis.describe_stream(StreamName=stream_name)
+    snapshot.match("describe_stream", rs)
 
-    stream_names = stream_response["StreamNames"]
-    assert len(stream_names) > 0
-
-    found = False
-    for stream_name in stream_names:
-        if stack.stack_name in stream_name:
-            found = True
-            break
-    assert found
+    snapshot.add_transformer(snapshot.transform.key_value("StreamName"))
+    snapshot.add_transformer(snapshot.transform.key_value("ShardId"))
+    snapshot.add_transformer(snapshot.transform.key_value("StartingSequenceNumber"))
 
 
-@markers.aws.unknown
+@markers.aws.validated
 def test_cfn_handle_kinesis_firehose_resources(deploy_cfn_template, aws_client):
     kinesis_stream_name = f"kinesis-stream-{short_uid()}"
     firehose_role_name = f"firehose-role-{short_uid()}"
@@ -120,7 +119,7 @@ def test_describe_template(s3_create_bucket, aws_client, cleanups, snapshot):
             f"https://{bucket_name}.s3.{aws_client.s3.meta.region_name}.amazonaws.com/template.yml"
         )
     else:
-        template_url = f"{config.get_edge_url()}/{bucket_name}/template.yml"
+        template_url = f"{config.internal_service_url()}/{bucket_name}/template.yml"
 
     # get summary by template URL
     get_template_summary_by_url = aws_client.cloudformation.get_template_summary(
@@ -140,37 +139,37 @@ def test_describe_template(s3_create_bucket, aws_client, cleanups, snapshot):
     assert param_keys == {"KinesisStreamName", "DeliveryStreamName", "KinesisRoleName"}
 
 
-TEST_TEMPLATE_28 = """
-AWSTemplateFormatVersion: '2010-09-09'
-Resources:
-  EventStream:
-    Type: AWS::Kinesis::Stream
-    Properties:
-      Name: EventStream
-      ShardCount: 1
-  EventTable:
-    Type: AWS::DynamoDB::Table
-    Properties:
-      TableName: %s
-      AttributeDefinitions:
-      - AttributeName: pkey
-        AttributeType: S
-      KeySchema:
-      - AttributeName: pkey
-        KeyType: HASH
-      BillingMode: PAY_PER_REQUEST
-      KinesisStreamSpecification:
-        StreamArn: !GetAtt EventStream.Arn
-"""
+@pytest.mark.skipif(
+    condition=not is_aws_cloud() and config.DDB_STREAMS_PROVIDER_V2,
+    reason="Not yet implemented in DDB Streams V2",
+)
+@markers.aws.validated
+@markers.snapshot.skip_snapshot_verify(
+    paths=["$..KinesisDataStreamDestinations..DestinationStatusDescription"]
+)
+def test_dynamodb_stream_response_with_cf(deploy_cfn_template, aws_client, snapshot):
+    table_name = f"table-{short_uid()}"
+    deploy_cfn_template(
+        template_path=os.path.join(
+            os.path.dirname(__file__), "../../../templates/cfn_kinesis_dynamodb.yml"
+        ),
+        parameters={"TableName": table_name},
+    )
+
+    response = aws_client.dynamodb.describe_kinesis_streaming_destination(TableName=table_name)
+    snapshot.match("describe_kinesis_streaming_destination", response)
+    snapshot.add_transformer(snapshot.transform.key_value("TableName"))
 
 
-@markers.aws.unknown
-def test_dynamodb_stream_response_with_cf(deploy_cfn_template, aws_client):
-    template = TEST_TEMPLATE_28 % "EventTable"
-    deploy_cfn_template(template=template)
-
-    response = aws_client.dynamodb.describe_kinesis_streaming_destination(TableName="EventTable")
-
-    assert response.get("TableName") == "EventTable"
-    assert len(response.get("KinesisDataStreamDestinations")) == 1
-    assert "StreamArn" in response.get("KinesisDataStreamDestinations")[0]
+@markers.aws.validated
+def test_kinesis_stream_consumer_creations(deploy_cfn_template, aws_client):
+    consumer_name = f"{short_uid()}"
+    stack = deploy_cfn_template(
+        parameters={"TestConsumerName": consumer_name},
+        template_path=os.path.join(
+            os.path.dirname(__file__), "../../../templates/kinesis_stream_consumer.yaml"
+        ),
+    )
+    consumer_arn = stack.outputs["KinesisSConsumerARN"]
+    response = aws_client.kinesis.describe_stream_consumer(ConsumerARN=consumer_arn)
+    assert response["ConsumerDescription"]["ConsumerStatus"] == "ACTIVE"

@@ -52,8 +52,6 @@ requirements.copy.txt
 *tfplan
 *.terraform.lock.hcl
 
-.python-version
-
 venv
 api_states
 
@@ -68,3 +66,9 @@ gen/
 
 # hypothesis pytest plugin
 .hypothesis
+
+# RAW snapshots
+*.raw.snapshot.json
+
+# setuptools_scm version.py
+*/*/version.py

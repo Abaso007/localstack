@@ -1,27 +1,22 @@
 import json
 
 import pytest
+from localstack_snapshot.snapshots.transformer import JsonpathTransformer, RegexTransformer
 
-from localstack.aws.api.lambda_ import LogType
+from localstack.aws.api.lambda_ import LogType, Runtime
 from localstack.testing.aws.util import is_aws_cloud
 from localstack.testing.pytest import markers
-from localstack.testing.snapshots.transformer import JsonpathTransformer, RegexTransformer
+from localstack.testing.pytest.stepfunctions.utils import (
+    create_and_record_execution,
+)
 from localstack.utils.strings import short_uid
 from tests.aws.services.stepfunctions.templates.services.services_templates import (
     ServicesTemplates as ST,
-)
-from tests.aws.services.stepfunctions.utils import create_and_record_execution, is_old_provider
-
-pytestmark = pytest.mark.skipif(
-    condition=is_old_provider(), reason="Test suite for v2 provider only."
 )
 
 
 @markers.snapshot.skip_snapshot_verify(
     paths=[
-        "$..loggingConfiguration",
-        "$..tracingConfiguration",
-        "$..previousEventId",
         # TODO: add support for Sdk Http metadata.
         "$..SdkHttpMetadata",
         "$..SdkResponseMetadata",
@@ -32,7 +27,7 @@ class TestTaskServiceLambda:
     def test_invoke(
         self,
         aws_client,
-        create_iam_role_for_sfn,
+        create_state_machine_iam_role,
         create_state_machine,
         create_lambda_function,
         sfn_snapshot,
@@ -41,7 +36,7 @@ class TestTaskServiceLambda:
         create_lambda_function(
             func_name=function_name,
             handler_file=ST.LAMBDA_ID_FUNCTION,
-            runtime="python3.9",
+            runtime=Runtime.python3_12,
         )
         sfn_snapshot.add_transformer(RegexTransformer(function_name, "<lambda_function_name>"))
 
@@ -50,8 +45,8 @@ class TestTaskServiceLambda:
 
         exec_input = json.dumps({"FunctionName": function_name, "Payload": None})
         create_and_record_execution(
-            aws_client.stepfunctions,
-            create_iam_role_for_sfn,
+            aws_client,
+            create_state_machine_iam_role,
             create_state_machine,
             sfn_snapshot,
             definition,
@@ -62,7 +57,7 @@ class TestTaskServiceLambda:
     def test_invoke_bytes_payload(
         self,
         aws_client,
-        create_iam_role_for_sfn,
+        create_state_machine_iam_role,
         create_state_machine,
         create_lambda_function,
         sfn_snapshot,
@@ -71,7 +66,7 @@ class TestTaskServiceLambda:
         create_lambda_function(
             func_name=function_name,
             handler_file=ST.LAMBDA_RETURN_BYTES_STR,
-            runtime="python3.9",
+            runtime=Runtime.python3_12,
         )
         sfn_snapshot.add_transformer(RegexTransformer(function_name, "<lambda_function_name>"))
 
@@ -82,8 +77,8 @@ class TestTaskServiceLambda:
             {"FunctionName": function_name, "Payload": json.dumps("'{'Hello':'World'}'")}
         )
         create_and_record_execution(
-            aws_client.stepfunctions,
-            create_iam_role_for_sfn,
+            aws_client,
+            create_state_machine_iam_role,
             create_state_machine,
             sfn_snapshot,
             definition,
@@ -95,7 +90,7 @@ class TestTaskServiceLambda:
     def test_invoke_unsupported_param(
         self,
         aws_client,
-        create_iam_role_for_sfn,
+        create_state_machine_iam_role,
         create_state_machine,
         create_lambda_function,
         sfn_snapshot,
@@ -104,7 +99,7 @@ class TestTaskServiceLambda:
         create_lambda_function(
             func_name=function_name,
             handler_file=ST.LAMBDA_ID_FUNCTION,
-            runtime="python3.9",
+            runtime=Runtime.python3_12,
         )
         sfn_snapshot.add_transformer(RegexTransformer(function_name, "<lambda_function_name>"))
         sfn_snapshot.add_transformer(
@@ -118,8 +113,8 @@ class TestTaskServiceLambda:
             {"FunctionName": function_name, "Payload": None, "LogType": LogType.Tail}
         )
         create_and_record_execution(
-            aws_client.stepfunctions,
-            create_iam_role_for_sfn,
+            aws_client,
+            create_state_machine_iam_role,
             create_state_machine,
             sfn_snapshot,
             definition,
@@ -142,7 +137,7 @@ class TestTaskServiceLambda:
     def test_invoke_json_values(
         self,
         aws_client,
-        create_iam_role_for_sfn,
+        create_state_machine_iam_role,
         create_state_machine,
         create_lambda_function,
         sfn_snapshot,
@@ -152,7 +147,7 @@ class TestTaskServiceLambda:
         create_lambda_function(
             func_name=function_name,
             handler_file=ST.LAMBDA_ID_FUNCTION,
-            runtime="python3.9",
+            runtime=Runtime.python3_12,
         )
         sfn_snapshot.add_transformer(RegexTransformer(function_name, "<lambda_function_name>"))
         sfn_snapshot.add_transformer(
@@ -164,8 +159,8 @@ class TestTaskServiceLambda:
 
         exec_input = json.dumps({"FunctionName": function_name, "Payload": json.dumps(json_value)})
         create_and_record_execution(
-            aws_client.stepfunctions,
-            create_iam_role_for_sfn,
+            aws_client,
+            create_state_machine_iam_role,
             create_state_machine,
             sfn_snapshot,
             definition,
@@ -180,7 +175,7 @@ class TestTaskServiceLambda:
     def test_list_functions(
         self,
         aws_client,
-        create_iam_role_for_sfn,
+        create_state_machine_iam_role,
         create_state_machine,
         sfn_snapshot,
     ):
@@ -189,8 +184,8 @@ class TestTaskServiceLambda:
 
         exec_input = json.dumps({})
         create_and_record_execution(
-            aws_client.stepfunctions,
-            create_iam_role_for_sfn,
+            aws_client,
+            create_state_machine_iam_role,
             create_state_machine,
             sfn_snapshot,
             definition,

@@ -3,6 +3,7 @@ from unittest.mock import ANY, MagicMock, patch
 import boto3
 import botocore
 import pytest
+from botocore.config import Config
 
 from localstack.aws.api import RequestContext
 from localstack.aws.chain import Handler, HandlerChain
@@ -15,11 +16,13 @@ from localstack.aws.connect import (
 from localstack.aws.gateway import Gateway
 from localstack.aws.handlers import add_internal_request_params, add_region_from_header
 from localstack.config import HostAndPort
-from localstack.constants import TEST_AWS_ACCESS_KEY_ID, TEST_AWS_SECRET_ACCESS_KEY
+from localstack.constants import INTERNAL_AWS_SECRET_ACCESS_KEY
 from localstack.http import Response
+from localstack.http.duplex_socket import enable_duplex_socket
 from localstack.http.hypercorn import GatewayServer
-from localstack.utils.aws.aws_stack import extract_access_key_id_from_auth_header
+from localstack.testing.config import TEST_AWS_ACCESS_KEY_ID
 from localstack.utils.aws.client_types import ServicePrincipal
+from localstack.utils.aws.request_context import extract_access_key_id_from_auth_header
 from localstack.utils.net import get_free_tcp_port
 
 
@@ -30,6 +33,10 @@ class TestClientFactory:
 
         def _create(request_handlers: list[Handler]) -> str:
             nonlocal server
+
+            # explicitly enable the duplex socket support here
+            enable_duplex_socket()
+
             gateway = Gateway()
             gateway.request_handlers.append(add_internal_request_params)
             for handler in request_handlers:
@@ -62,7 +69,7 @@ class TestClientFactory:
         mock.meta.events.register.assert_not_called()
 
     @patch.object(ExternalClientFactory, "_get_client")
-    def test_external_client_credentials_origin(self, mock, monkeypatch):
+    def test_external_client_credentials_origin(self, mock, region_name, monkeypatch):
         connect_to = ExternalClientFactory(use_ssl=True)
         connect_to.get_client(
             "abc", region_name="xx-south-1", aws_access_key_id="foo", aws_secret_access_key="bar"
@@ -86,7 +93,7 @@ class TestClientFactory:
         )
         mock.assert_called_once_with(
             service_name="def",
-            region_name="us-east-1",
+            region_name=region_name,
             use_ssl=True,
             verify=False,
             endpoint_url="http://localhost:4566",
@@ -101,19 +108,19 @@ class TestClientFactory:
         connect_to.get_client("def", region_name=None, aws_access_key_id=TEST_AWS_ACCESS_KEY_ID)
         mock.assert_called_once_with(
             service_name="def",
-            region_name="us-east-1",
+            region_name=region_name,
             use_ssl=True,
             verify=False,
             endpoint_url="http://localhost:4566",
             aws_access_key_id=TEST_AWS_ACCESS_KEY_ID,
-            aws_secret_access_key=TEST_AWS_SECRET_ACCESS_KEY,
+            aws_secret_access_key=INTERNAL_AWS_SECRET_ACCESS_KEY,
             aws_session_token=None,
             config=connect_to._config,
         )
 
     @patch.object(ExternalAwsClientFactory, "_get_client")
     def test_external_aws_client_credentials_loaded_from_env_if_set_to_none(
-        self, mock, monkeypatch
+        self, mock, region_name, monkeypatch
     ):
         session = boto3.Session()
         connect_to = ExternalAwsClientFactory(use_ssl=True, session=session)
@@ -141,7 +148,7 @@ class TestClientFactory:
         )
         mock.assert_called_once_with(
             service_name="def",
-            region_name="us-east-1",
+            region_name=region_name,
             use_ssl=True,
             verify=True,
             endpoint_url=None,
@@ -248,9 +255,43 @@ class TestClientFactory:
         # TODO does it really make sense to test the caching?
         # TODO pretty ugly way of accessing the internal client
         factory = InternalClientFactory()
-        assert factory().s3._client == factory().s3._client
+        assert factory().s3._client is factory().s3._client
         factory_2 = InternalClientFactory()
         assert factory().s3._client != factory_2().s3._client
+
+    def test_client_caching_with_config(self):
+        """Test client caching. Same factory for the same service should result in the same client.
+        Different factories should result in different (identity wise) clients"""
+        # This test might get flaky if some internal boto3 caching is introduced at some point
+        config = Config(read_timeout=2, signature_version=botocore.UNSIGNED)
+        second_config = Config(read_timeout=2, signature_version=botocore.UNSIGNED)
+        third_config = Config(read_timeout=3, signature_version=botocore.UNSIGNED)
+        factory = InternalClientFactory()
+        client_1 = factory(config=config).s3._client
+        client_2 = factory(config=config).s3._client
+        client_3 = factory(config=second_config).s3._client
+        client_4 = factory(config=third_config).s3._client
+        assert client_1 is client_2
+        assert client_2 is client_3
+        assert client_3 is not client_4
+
+    def test_client_caching_with_merged_configs(self):
+        """Test client caching. Same factory for the same service should result in the same client.
+        Different factories should result in different (identity wise) clients"""
+        # This test might get flaky if some internal boto3 caching is introduced at some point
+        config_1 = Config(read_timeout=2)
+        config_2 = Config(signature_version=botocore.UNSIGNED)
+        config_3 = config_1.merge(config_2)
+        config_4 = config_1.merge(config_2)
+        factory = InternalClientFactory()
+        client_1 = factory(config=config_1).s3._client
+        client_2 = factory(config=config_2).s3._client
+        client_3 = factory(config=config_3).s3._client
+        client_4 = factory(config=config_4).s3._client
+        assert client_1 is not client_2
+        assert client_2 is not client_3
+        assert client_1 is not client_3
+        assert client_3 is client_4
 
     def test_internal_request_parameters(self, create_dummy_request_parameter_gateway):
         internal_dto = None

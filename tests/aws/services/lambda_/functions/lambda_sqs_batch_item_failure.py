@@ -14,6 +14,7 @@ The lambda understands two env variables:
 * OVERWRITE_RESULT: a string (potentially a json document) that can be used to return custom responses to provoke errors
 * DESTINATION_QUEUE_URL: the queue url to send the event and result to
 """
+
 import json
 import os
 
@@ -67,10 +68,8 @@ def handler(event, context):
 
 def create_external_boto_client(service):
     endpoint_url = None
-    if os.environ.get("LOCALSTACK_HOSTNAME"):
-        endpoint_url = (
-            f"http://{os.environ['LOCALSTACK_HOSTNAME']}:{os.environ.get('EDGE_PORT', 4566)}"
-        )
+    if os.environ.get("AWS_ENDPOINT_URL"):
+        endpoint_url = os.environ["AWS_ENDPOINT_URL"]
     # fix for local lambda executor
     region_name = (
         os.environ.get("AWS_DEFAULT_REGION") or os.environ.get("AWS_REGION") or "us-east-1"

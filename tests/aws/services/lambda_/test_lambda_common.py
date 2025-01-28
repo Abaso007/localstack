@@ -1,16 +1,25 @@
+"""Testing different runtimes focusing on common functionality that should work across all runtimes (e.g., echo invoke).
+Internally, these tests are also known as multiruntime tests.
+
+Directly correlates to the structure found in tests.aws.lambda_.functions.common
+Each scenario has the following folder structure: ./common/<scenario>/runtime/
+Runtime can either be directly one of the supported runtimes (e.g. in case of version specific compilation instructions)
+or one of the keys in RUNTIMES_AGGREGATED. To selectively execute runtimes, use the runtimes parameter of multiruntime.
+Example: runtimes=[Runtime.go1_x]
+"""
+
 import json
 import logging
-import platform
 import time
 import zipfile
 
 import pytest
+from localstack_snapshot.snapshots.transformer import KeyValueBasedTransformer
 
-from localstack.testing.aws.lambda_utils import is_old_provider
+from localstack.services.lambda_.runtimes import RUNTIMES_AGGREGATED, TESTED_RUNTIMES
 from localstack.testing.pytest import markers
-from localstack.testing.snapshots.transformer import KeyValueBasedTransformer
 from localstack.utils.files import cp_r
-from localstack.utils.strings import short_uid, to_bytes, to_str
+from localstack.utils.strings import short_uid, to_bytes
 
 LOG = logging.getLogger(__name__)
 
@@ -24,9 +33,9 @@ def snapshot_transformers(snapshot):
             snapshot.transform.key_value("AWS_SECRET_ACCESS_KEY", "aws-secret-access-key"),
             snapshot.transform.key_value("AWS_SESSION_TOKEN", "aws-session-token"),
             snapshot.transform.key_value("_X_AMZN_TRACE_ID", "x-amzn-trace-id"),
-            # go lambdas only
+            # Works in LocalStack locally but the hash changes in CI and every time at AWS (except for Java runtimes)
             snapshot.transform.key_value(
-                "_LAMBDA_SERVER_PORT", "<lambda-server-port>", reference_replacement=False
+                "CodeSha256", value_replacement="<code-sha256>", reference_replacement=False
             ),
             # workaround for integer values
             KeyValueBasedTransformer(
@@ -39,24 +48,11 @@ def snapshot_transformers(snapshot):
     )
 
 
-@pytest.mark.skipif(
-    condition=is_old_provider(),
-    reason="Local executor does not support the majority of the runtimes",
-)
-@pytest.mark.skipif(
-    condition=platform.machine() != "x86_64", reason="build process doesn't support arm64 right now"
-)
+@markers.lambda_runtime_update
 class TestLambdaRuntimesCommon:
-    """
-    Directly correlates to the structure found in tests.aws.lambda_.functions.common
-    Each scenario has the following folder structure: ./common/<scenario>/runtime/
-    Runtime can either be directly one of the supported runtimes (e.g. in case of version specific compilation instructions) or one of the keys in RUNTIMES_AGGREGATED
-    To selectively execute runtimes, use the runtimes parameter of multiruntime. Example: runtimes=[Runtime.go1_x]
-    """
-
-    # TODO: refactor builds:
-    # * Remove specific hashes and `touch -t` since we're not actually checking size & hash of the zip files anymore
-    # * Create a generic parametrizable Makefile per runtime (possibly with an option to provide a specific one)
+    # TODO: refactor builds by creating a generic parametrizable Makefile per runtime (possibly with an option to
+    #  provide a specific one). This might be doable by including another Makefile:
+    #  https://www.gnu.org/software/make/manual/make.html#Include
 
     @markers.aws.validated
     @markers.multiruntime(scenario="echo")
@@ -71,7 +67,7 @@ class TestLambdaRuntimesCommon:
             )
 
             assert invoke_result["StatusCode"] == 200
-            assert json.loads(invoke_result["Payload"].read()) == payload
+            assert json.load(invoke_result["Payload"]) == payload
             assert not invoke_result.get("FunctionError")
 
         # simple payload
@@ -105,12 +101,14 @@ class TestLambdaRuntimesCommon:
             FunctionName=create_function_result["FunctionName"]
         )
         assert invoke_result["StatusCode"] == 200
-        assert json.loads(invoke_result["Payload"].read()) == {}
+        assert json.load(invoke_result["Payload"]) == {}
         assert not invoke_result.get("FunctionError")
 
     # skip snapshots of LS specific env variables
     @markers.snapshot.skip_snapshot_verify(
         paths=[
+            # TODO: implement logging config
+            "$..LoggingConfig",
             # LocalStack API
             "$..environment.LOCALSTACK_HOSTNAME",
             "$..environment.EDGE_PORT",
@@ -134,7 +132,18 @@ class TestLambdaRuntimesCommon:
             "$..environment.AWS_EXECUTION_ENV",  # Only rust runtime
             "$..environment.LD_LIBRARY_PATH",  # Only rust runtime (additional /var/lang/bin)
             "$..environment.PATH",  # Only rust runtime (additional /var/lang/bin)
-            "$..CodeSha256",  # works locally but unfortunately still produces a different hash in CI
+            "$..environment.LC_CTYPE",  # Only python3.11 (part of a broken image rollout, likely rolled back)
+            # Newer Nodejs images explicitly disable a temporary performance workaround for Nodejs 20 on certain hosts:
+            # https://nodejs.org/api/cli.html#uv_use_io_uringvalue
+            # https://techfindings.net/archives/6469
+            "$..environment.UV_USE_IO_URING",  # Only Nodejs runtimes
+            # Only Dotnet8
+            "$..environment.DOTNET_CLI_TELEMETRY_OPTOUT",
+            "$..environment.DOTNET_NOLOGO",
+            "$..environment.DOTNET_RUNNING_IN_CONTAINER",
+            "$..environment.DOTNET_VERSION",
+            # Changed from 127.0.0.1:9001 to 169.254.100.1:9001 around 2024-11, which would require network changes
+            "$..environment.AWS_LAMBDA_RUNTIME_API",
         ]
     )
     @markers.aws.validated
@@ -152,8 +161,7 @@ class TestLambdaRuntimesCommon:
         )
 
         assert invoke_result["StatusCode"] == 200
-        invocation_result_payload = to_str(invoke_result["Payload"].read())
-        invocation_result_payload = json.loads(invocation_result_payload)
+        invocation_result_payload = json.load(invoke_result["Payload"])
         assert "environment" in invocation_result_payload
         assert "ctx" in invocation_result_payload
         assert "packages" in invocation_result_payload
@@ -166,13 +174,13 @@ class TestLambdaRuntimesCommon:
         )
 
         assert invoke_result["StatusCode"] == 200
-        invocation_result_payload_qualified = to_str(invoke_result_qualified["Payload"].read())
-        invocation_result_payload_qualified = json.loads(invocation_result_payload_qualified)
+        invocation_result_payload_qualified = json.load(invoke_result_qualified["Payload"])
         snapshot.match("invocation_result_payload_qualified", invocation_result_payload_qualified)
 
     @markers.snapshot.skip_snapshot_verify(
         paths=[
-            "$..CodeSha256",  # works locally but unfortunately still produces a different hash in CI
+            # TODO: implement logging config
+            "$..LoggingConfig",
         ]
     )
     @markers.aws.validated
@@ -200,16 +208,17 @@ class TestLambdaRuntimesCommon:
 
     @markers.snapshot.skip_snapshot_verify(
         paths=[
-            "$..CodeSha256",  # works locally but unfortunately still produces a different hash in CI
+            # TODO: implement logging config
+            "$..LoggingConfig",
         ]
     )
     @markers.aws.validated
-    # this does only work on al2 lambdas, except provided.al2.
+    # Only works for >=al2 runtimes, except for any provided runtimes
+    # Does NOT work for provided runtimes
     # Source: https://docs.aws.amazon.com/lambda/latest/dg/runtimes-modify.html#runtime-wrapper
     @markers.multiruntime(
         scenario="introspection",
-        runtimes=["nodejs"],
-        # runtimes=["nodejs", "python3.8", "python3.9", "java8.al2", "java11", "dotnet", "ruby"],
+        runtimes=list(set(TESTED_RUNTIMES) - set(RUNTIMES_AGGREGATED.get("provided"))),
     )
     def test_runtime_wrapper_invoke(self, multiruntime_lambda, snapshot, tmp_path, aws_client):
         # copy and modify zip file, pretty dirty hack to reuse scenario and reduce CI test runtime
@@ -241,44 +250,32 @@ class TestLambdaRuntimesCommon:
         )
 
         assert invoke_result["StatusCode"] == 200
-        invocation_result_payload = to_str(invoke_result["Payload"].read())
-        invocation_result_payload = json.loads(invocation_result_payload)
+        invocation_result_payload = json.load(invoke_result["Payload"])
         assert "environment" in invocation_result_payload
         assert "ctx" in invocation_result_payload
         assert "packages" in invocation_result_payload
         assert invocation_result_payload["environment"]["WRAPPER_VAR"] == test_value
 
 
-# TODO: Split this and move to PRO
-@pytest.mark.skipif(
-    condition=is_old_provider(),
-    reason="Local executor does not support the majority of the runtimes",
-)
-@pytest.mark.skipif(
-    condition=platform.machine() != "x86_64", reason="build process doesn't support arm64 right now"
-)
+@markers.lambda_runtime_update
 class TestLambdaCallingLocalstack:
+    """=> Keep these tests synchronized with `test_lambda_endpoint_injection.py` in ext!"""
+
     @markers.multiruntime(
         scenario="endpointinjection",
-        runtimes=[
-            "nodejs",
-            "python",
-            "ruby",
-            "java8.al2",
-            "java11",
-            "go1.x",  # TODO: does not yet support transparent endpoint injection
-            "dotnet6",  # TODO: does not yet support transparent endpoint injection
-        ],
+        runtimes=list(set(TESTED_RUNTIMES) - set(RUNTIMES_AGGREGATED.get("provided"))),
     )
-    @markers.aws.only_localstack
-    def test_calling_localstack_from_lambda(self, multiruntime_lambda, tmp_path, aws_client):
-        create_function_result = multiruntime_lambda.create_function(
-            MemorySize=1024,
-            Environment={"Variables": {"CONFIGURE_CLIENT": "1"}},
-        )
+    @markers.aws.validated
+    def test_manual_endpoint_injection(self, multiruntime_lambda, tmp_path, aws_client):
+        """Test calling SQS from Lambda using manual AWS SDK client configuration via AWS_ENDPOINT_URL.
+        This must work for all runtimes.
+        The code might differ depending on the SDK version shipped with the Lambda runtime.
+        This test is designed to be AWS-compatible using minimal code changes to configure the endpoint url for LS.
+        """
+
+        create_function_result = multiruntime_lambda.create_function(MemorySize=1024, Timeout=15)
 
         invocation_result = aws_client.lambda_.invoke(
             FunctionName=create_function_result["FunctionName"],
-            Payload=b"{}",
         )
         assert "FunctionError" not in invocation_result

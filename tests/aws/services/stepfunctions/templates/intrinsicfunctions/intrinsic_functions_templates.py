@@ -17,10 +17,16 @@ class IntrinsicFunctionTemplate(TemplateLoader):
     ARRAY_PARTITION: Final[str] = os.path.join(
         _THIS_FOLDER, "statemachines/array/array_partition.json5"
     )
+    ARRAY_PARTITION_JSONATA: Final[str] = os.path.join(
+        _THIS_FOLDER, "statemachines/array/array_partition_jsonata.json5"
+    )
     ARRAY_CONTAINS: Final[str] = os.path.join(
         _THIS_FOLDER, "statemachines/array/array_contains.json5"
     )
     ARRAY_RANGE: Final[str] = os.path.join(_THIS_FOLDER, "statemachines/array/array_range.json5")
+    ARRAY_RANGE_JSONATA: Final[str] = os.path.join(
+        _THIS_FOLDER, "statemachines/array/array_range_jsonata.json5"
+    )
     ARRAY_GET_ITEM: Final[str] = os.path.join(
         _THIS_FOLDER, "statemachines/array/array_get_item.json5"
     )
@@ -37,10 +43,19 @@ class IntrinsicFunctionTemplate(TemplateLoader):
     JSON_MERGE: Final[str] = os.path.join(
         _THIS_FOLDER, "statemachines/json_manipulation/json_merge.json5"
     )
+    JSON_MERGE_ESCAPED_ARGUMENT: Final[str] = os.path.join(
+        _THIS_FOLDER, "statemachines/json_manipulation/json_merge_escaped_argument.json5"
+    )
+    PARSE_JSONATA: Final[str] = os.path.join(
+        _THIS_FOLDER, "statemachines/json_manipulation/parse_jsonata.json5"
+    )
 
     # String Operations.
     STRING_SPLIT: Final[str] = os.path.join(
         _THIS_FOLDER, "statemachines/string_operations/string_split.json5"
+    )
+    STRING_SPLIT_CONTEXT_OBJECT: Final[str] = os.path.join(
+        _THIS_FOLDER, "statemachines/string_operations/string_split_context_object.json5"
     )
 
     # Encode and Decode.
@@ -61,6 +76,9 @@ class IntrinsicFunctionTemplate(TemplateLoader):
     MATH_RANDOM_SEEDED: Final[str] = os.path.join(
         _THIS_FOLDER, "statemachines/math_operations/math_random_seeded.json5"
     )
+    MATH_RANDOM_SEEDED_JSONATA: Final[str] = os.path.join(
+        _THIS_FOLDER, "statemachines/math_operations/math_random_seeded_jsonata.json5"
+    )
     MATH_ADD: Final[str] = os.path.join(
         _THIS_FOLDER, "statemachines/math_operations/math_add.json5"
     )
@@ -68,3 +86,15 @@ class IntrinsicFunctionTemplate(TemplateLoader):
     # Generic.
     FORMAT_1: Final[str] = os.path.join(_THIS_FOLDER, "statemachines/generic/format_1.json5")
     FORMAT_2: Final[str] = os.path.join(_THIS_FOLDER, "statemachines/generic/format_2.json5")
+    FORMAT_CONTEXT_PATH: Final[str] = os.path.join(
+        _THIS_FOLDER, "statemachines/generic/format_context_path.json5"
+    )
+    NESTED_CALLS_1: Final[str] = os.path.join(
+        _THIS_FOLDER, "statemachines/generic/nested_calls_1.json5"
+    )
+    NESTED_CALLS_2: Final[str] = os.path.join(
+        _THIS_FOLDER, "statemachines/generic/nested_calls_2.json5"
+    )
+    ESCAPE_SEQUENCE: Final[str] = os.path.join(
+        _THIS_FOLDER, "statemachines/generic/escape_sequence.json5"
+    )

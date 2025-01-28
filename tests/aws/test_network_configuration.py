@@ -1,4 +1,6 @@
+from localstack.constants import AWS_REGION_US_EAST_1
 from localstack.testing.pytest import markers
+from localstack.utils.urls import localstack_host
 
 """
 This test file captures the _current_ state of returning URLs before making
@@ -16,7 +18,6 @@ from botocore.auth import SigV4Auth
 
 from localstack import config
 from localstack.aws.api.lambda_ import Runtime
-from localstack.testing.aws.lambda_utils import is_new_provider, is_old_provider
 from localstack.utils.files import new_tmp_file, save_file
 from localstack.utils.strings import short_uid
 
@@ -36,9 +37,12 @@ class TestOpenSearch:
             "Endpoint"
         ]
 
-        assert_host_customisation(endpoint, use_localstack_cloud=True)
+        assert_host_customisation(endpoint)
 
     @markers.aws.only_localstack
+    @pytest.mark.skipif(
+        not config.in_docker(), reason="Replacement does not work in host mode, currently"
+    )
     def test_port_strategy(
         self,
         monkeypatch,
@@ -54,10 +58,7 @@ class TestOpenSearch:
             "Endpoint"
         ]
 
-        if config.is_in_docker:
-            assert_host_customisation(endpoint, use_localhost=True)
-        else:
-            assert_host_customisation(endpoint, custom_host="127.0.0.1")
+        assert_host_customisation(endpoint)
 
     @markers.aws.only_localstack
     def test_path_strategy(
@@ -75,19 +76,17 @@ class TestOpenSearch:
             "Endpoint"
         ]
 
-        assert_host_customisation(endpoint, use_localstack_hostname=True)
+        assert_host_customisation(endpoint)
 
 
 class TestS3:
-    @pytest.mark.skipif(
-        condition=config.LEGACY_S3_PROVIDER, reason="Not implemented for legacy provider"
-    )
     @markers.aws.only_localstack
     def test_non_us_east_1_location(
-        self, s3_empty_bucket, cleanups, assert_host_customisation, aws_client
+        self, s3_empty_bucket, cleanups, assert_host_customisation, aws_client_factory
     ):
+        client_us_east_1 = aws_client_factory(region_name=AWS_REGION_US_EAST_1).s3
         bucket_name = f"bucket-{short_uid()}"
-        res = aws_client.s3.create_bucket(
+        res = client_us_east_1.create_bucket(
             Bucket=bucket_name,
             CreateBucketConfiguration={
                 "LocationConstraint": "eu-west-1",
@@ -96,11 +95,11 @@ class TestS3:
 
         def cleanup():
             s3_empty_bucket(bucket_name)
-            aws_client.s3.delete_bucket(Bucket=bucket_name)
+            client_us_east_1.delete_bucket(Bucket=bucket_name)
 
         cleanups.append(cleanup)
 
-        assert_host_customisation(res["Location"], use_hostname_external=True)
+        assert_host_customisation(res["Location"])
 
     @markers.aws.only_localstack
     def test_multipart_upload(self, s3_bucket, assert_host_customisation, aws_client):
@@ -118,7 +117,7 @@ class TestS3:
             UploadId=upload_id,
         )
 
-        assert_host_customisation(res["Location"], use_hostname_external=True)
+        assert_host_customisation(res["Location"])
 
     @markers.aws.only_localstack
     def test_201_response(self, s3_bucket, assert_host_customisation, aws_client):
@@ -140,16 +139,15 @@ class TestS3:
         res.raise_for_status()
         json_response = xmltodict.parse(res.content)["PostResponse"]
 
-        assert_host_customisation(json_response["Location"], use_hostname_external=True)
+        assert_host_customisation(json_response["Location"])
 
 
 class TestSQS:
     """
     Test all combinations of:
 
-    * endpoint_strategy
-    * sqs_port_external
-    * hostname_external
+    * SQS_ENDPOINT_STRATEGY
+    * LOCALSTACK_HOST
     """
 
     @markers.aws.only_localstack
@@ -161,7 +159,7 @@ class TestSQS:
         queue_name = f"queue-{short_uid()}"
         queue_url = sqs_create_queue(QueueName=queue_name)
 
-        assert_host_customisation(queue_url, use_localhost=True)
+        assert_host_customisation(queue_url)
         assert queue_name in queue_url
 
     @markers.aws.only_localstack
@@ -170,23 +168,30 @@ class TestSQS:
     ):
         external_port = 12345
         monkeypatch.setattr(config, "SQS_ENDPOINT_STRATEGY", "off")
-        monkeypatch.setattr(config, "SQS_PORT_EXTERNAL", external_port)
+        monkeypatch.setattr(
+            config,
+            "LOCALSTACK_HOST",
+            config.HostAndPort(host=localstack_host().host, port=external_port),
+        )
 
         queue_name = f"queue-{short_uid()}"
         queue_url = sqs_create_queue(QueueName=queue_name)
 
-        assert_host_customisation(queue_url, use_hostname_external=True)
+        assert_host_customisation(queue_url)
         assert queue_name in queue_url
         assert f":{external_port}" in queue_url
 
     @markers.aws.only_localstack
-    def test_domain_strategy(self, monkeypatch, sqs_create_queue, assert_host_customisation):
-        monkeypatch.setattr(config, "SQS_ENDPOINT_STRATEGY", "domain")
+    @pytest.mark.parametrize("strategy", ["standard", "domain"])
+    def test_domain_based_strategies(
+        self, strategy, monkeypatch, sqs_create_queue, assert_host_customisation
+    ):
+        monkeypatch.setattr(config, "SQS_ENDPOINT_STRATEGY", strategy)
 
         queue_name = f"queue-{short_uid()}"
         queue_url = sqs_create_queue(QueueName=queue_name)
 
-        assert_host_customisation(queue_url, use_localstack_cloud=True)
+        assert_host_customisation(queue_url)
         assert queue_name in queue_url
 
     @markers.aws.only_localstack
@@ -196,12 +201,11 @@ class TestSQS:
         queue_name = f"queue-{short_uid()}"
         queue_url = sqs_create_queue(QueueName=queue_name)
 
-        assert_host_customisation(queue_url, use_localhost=True)
+        assert_host_customisation(queue_url)
         assert queue_name in queue_url
 
 
 class TestLambda:
-    @pytest.mark.skipif(condition=is_old_provider(), reason="Not implemented for legacy provider")
     @markers.aws.only_localstack
     def test_function_url(self, assert_host_customisation, create_lambda_function, aws_client):
         function_name = f"function-{short_uid()}"
@@ -212,7 +216,7 @@ class TestLambda:
         create_lambda_function(
             func_name=function_name,
             handler_file=handler_file,
-            runtime=Runtime.python3_9,
+            runtime=Runtime.python3_12,
         )
 
         function_url = aws_client.lambda_.create_function_url_config(
@@ -220,9 +224,9 @@ class TestLambda:
             AuthType="NONE",
         )["FunctionUrl"]
 
-        assert_host_customisation(function_url, use_localstack_cloud=True)
+        assert_host_customisation(function_url)
 
-    @pytest.mark.skipif(condition=is_new_provider(), reason="Not implemented for new provider")
+    @pytest.mark.skip(reason="Not implemented for new provider (was tested for old provider)")
     @markers.aws.only_localstack
     def test_http_api_for_function_url(
         self, assert_host_customisation, create_lambda_function, aws_http_client_factory
@@ -235,7 +239,7 @@ class TestLambda:
         create_lambda_function(
             func_name=function_name,
             handler_file=handler_file,
-            runtime=Runtime.python3_9,
+            runtime=Runtime.python3_12,
         )
 
         client = aws_http_client_factory("lambda", signer_factory=SigV4Auth)
@@ -253,4 +257,4 @@ class TestLambda:
 
         function_url = r.json()["FunctionUrl"]
 
-        assert_host_customisation(function_url, use_localstack_cloud=True)
+        assert_host_customisation(function_url)

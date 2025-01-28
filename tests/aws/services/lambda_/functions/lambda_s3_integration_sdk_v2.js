@@ -5,20 +5,20 @@ exports.handler = async (event, context, callback) => {
     const bodyMd5AsBase64 = '4QrcOUm6Wau+VuBX8g+IPg=='; // body should be '123456'
 
     let s3;
-    if (process.env.LOCALSTACK_HOSTNAME) {
+    if (process.env.AWS_ENDPOINT_URL) {
         const CREDENTIALS = {
-            secretAccessKey: 'test',
-            accessKeyId: 'test',
+            secretAccessKey: process.env.SECRET_KEY,
+            accessKeyId: process.env.ACCESS_KEY,
         };
         s3 = new AWS.S3({
             endpoint: "http://s3.localhost.localstack.cloud:4566",
-            region: 'us-east-1',
+            region: process.env.AWS_REGION,
             signatureVersion: 'v4', // Required for the presigned URL functionality with extra headers
             credentials: CREDENTIALS
           });
 
     } else {
-        s3 = new AWS.S3()
+        s3 = new AWS.S3({ signatureVersion: 'v4' })
     }
 
   const url = s3.getSignedUrl('putObject', {

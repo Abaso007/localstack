@@ -1,8 +1,6 @@
 import json
 import logging
 import os.path
-import socket
-from contextlib import closing
 
 import pytest
 import requests
@@ -11,13 +9,14 @@ from click.testing import CliRunner
 import localstack.utils.container_utils.docker_cmd_client
 from localstack import config, constants
 from localstack.cli.localstack import localstack as cli
-from localstack.config import Directories, get_edge_url, in_docker
-from localstack.constants import LOCALHOST_HOSTNAME, LOCALHOST_IP, MODULE_MAIN_PATH, TRUE_STRINGS
+from localstack.config import Directories, in_docker
+from localstack.constants import MODULE_MAIN_PATH, TRUE_STRINGS
 from localstack.utils import bootstrap
 from localstack.utils.bootstrap import in_ci
 from localstack.utils.common import poll_condition
+from localstack.utils.container_utils.container_client import ContainerClient, NoSuchImage
 from localstack.utils.files import mkdir
-from localstack.utils.net import get_free_udp_port, send_dns_query
+from localstack.utils.net import get_free_udp_port
 from localstack.utils.run import run, to_str
 
 LOG = logging.getLogger(__name__)
@@ -28,7 +27,7 @@ def runner():
     return CliRunner()
 
 
-def container_exists(client, container_name):
+def container_exists(client: ContainerClient, container_name: str) -> bool:
     try:
         container_id = client.get_container_id(container_name)
         return True if container_id else False
@@ -53,6 +52,25 @@ def container_client():
     )
 
 
+@pytest.fixture
+def backup_and_remove_image(monkeypatch, container_client: ContainerClient):
+    """
+    To test whether the image is pulled correctly, we must remove the image.
+    However we do not want to do this and remove the current image, so "back it
+    up" - i.e. tag it with another tag, and restore it afterwards.
+    """
+
+    source_image_name = f"{constants.DOCKER_IMAGE_NAME}:latest"
+    tagged_image_name = f"{constants.DOCKER_IMAGE_NAME}:backup"
+    container_client.tag_image(source_image_name, tagged_image_name)
+    container_client.remove_image(source_image_name, force=True)
+    monkeypatch.setenv("IMAGE_NAME", source_image_name)
+
+    yield
+
+    container_client.tag_image(tagged_image_name, source_image_name)
+
+
 @pytest.mark.skipif(condition=in_docker(), reason="cannot run CLI tests in docker")
 class TestCliContainerLifecycle:
     def test_start_wait_stop(self, runner, container_client):
@@ -63,18 +81,36 @@ class TestCliContainerLifecycle:
         result = runner.invoke(cli, ["wait", "-t", "60"])
         assert result.exit_code == 0
 
-        assert container_client.is_container_running(
-            config.MAIN_CONTAINER_NAME
-        ), "container name was not running after wait"
+        assert container_client.is_container_running(config.MAIN_CONTAINER_NAME), (
+            "container name was not running after wait"
+        )
 
-        health = requests.get(get_edge_url() + "/_localstack/health")
+        # Note: if `LOCALSTACK_HOST` is set to a domain that does not resolve to `127.0.0.1` then
+        # this test will fail
+        health = requests.get(config.external_service_url() + "/_localstack/health")
         assert health.ok, "health request did not return OK: %s" % health.text
 
         result = runner.invoke(cli, ["stop"])
         assert result.exit_code == 0
 
         with pytest.raises(requests.ConnectionError):
-            requests.get(get_edge_url() + "/_localstack/health")
+            requests.get(config.external_service_url() + "/_localstack/health")
+
+    @pytest.mark.usefixtures("backup_and_remove_image")
+    def test_pulling_image_message(self, runner, container_client: ContainerClient):
+        image_name_and_tag = f"{constants.DOCKER_IMAGE_NAME}:latest"
+        with pytest.raises(NoSuchImage):
+            container_client.inspect_image(image_name_and_tag, pull=False)
+
+        result = runner.invoke(cli, ["start", "-d"])
+
+        assert result.exit_code == 0, result.output
+
+        # we cannot check for "Pulling container image" which would be more accurate
+        # since it is printed in a temporary status line and may not be present in
+        # the output if the docker pull is fast enough, but we can check for the
+        # presence of another message which is present when pulling the image.
+        assert "download complete" in result.output
 
     def test_start_already_running(self, runner, container_client):
         runner.invoke(cli, ["start", "-d"])
@@ -99,6 +135,17 @@ class TestCliContainerLifecycle:
 
         result = runner.invoke(cli, ["logs", "--tail", "20"])
         assert constants.READY_MARKER_OUTPUT in result.output.splitlines()
+
+    def test_restart(self, runner, container_client):
+        result = runner.invoke(cli, ["restart"])
+        assert result.exit_code != 0
+
+        runner.invoke(cli, ["start", "-d"])
+        runner.invoke(cli, ["wait", "-t", "60"])
+
+        result = runner.invoke(cli, ["restart"])
+        assert result.exit_code == 0
+        assert "restarted" in result.output
 
     def test_status_services(self, runner):
         result = runner.invoke(cli, ["status", "services"])
@@ -167,12 +214,13 @@ class TestCliContainerLifecycle:
     def test_start_cli_within_container(self, runner, container_client, tmp_path):
         output = container_client.run_container(
             # CAVEAT: Updates to the Docker image are not immediately reflected when using the latest image from
-            # DockerHub in the CI. Re-build the Docker image locally through `make docker-build` for local testing.
+            # DockerHub in the CI. Re-build the Docker image locally through
+            # `IMAGE_NAME="localstack/localstack" ./bin/docker-helper.sh build` for local testing.
             "localstack/localstack",
             remove=True,
             entrypoint="",
             command=["bin/localstack", "start", "-d"],
-            mount_volumes=[
+            volumes=[
                 ("/var/run/docker.sock", "/var/run/docker.sock"),
                 (MODULE_MAIN_PATH, "/opt/code/localstack/localstack"),
             ],
@@ -188,61 +236,26 @@ class TestCliContainerLifecycle:
 
 @pytest.mark.skipif(condition=in_docker(), reason="cannot run CLI tests in docker")
 class TestDNSServer:
-    def test_dns_port_published(self, runner, container_client, monkeypatch):
+    def test_dns_port_published_with_flag(self, runner, container_client, monkeypatch):
         port = get_free_udp_port()
         monkeypatch.setenv("DEBUG", "1")
         monkeypatch.setenv("DNS_PORT", str(port))
         monkeypatch.setattr(config, "DNS_PORT", port)
 
-        runner.invoke(cli, ["start", "-d"])
+        runner.invoke(cli, ["start", "-d", "--host-dns"])
         runner.invoke(cli, ["wait", "-t", "60"])
 
         inspect = container_client.inspect_container(config.MAIN_CONTAINER_NAME)
         assert f"{port}/udp" in inspect["HostConfig"]["PortBindings"]
 
-    @pytest.mark.skip(reason="For this change, the tests run on the previous image")
-    def test_dns_server_custom_port(self, runner, container_client, monkeypatch):
-        port = get_free_udp_port()
+    def test_dns_port_not_published_by_default(self, runner, container_client, monkeypatch):
         monkeypatch.setenv("DEBUG", "1")
-        monkeypatch.setenv("DNS_PORT", str(port))
-        monkeypatch.setattr(config, "DNS_PORT", port)
 
         runner.invoke(cli, ["start", "-d"])
         runner.invoke(cli, ["wait", "-t", "60"])
 
-        reply = send_dns_query(name=LOCALHOST_HOSTNAME, port=port)
-        assert str(reply.a.rdata) == LOCALHOST_IP
-
-    @pytest.mark.skip(reason="For this change, the tests run on the previous image")
-    def test_dns_server_starts_if_host_port_bound(
-        self, runner, container_client, monkeypatch, dns_query_from_container
-    ):
-        port = get_free_udp_port()
-        monkeypatch.setenv("DEBUG", "1")
-        monkeypatch.setenv("DNS_PORT", str(port))
-        monkeypatch.setattr(config, "DNS_PORT", port)
-
-        # bind the port
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        s.bind(("", port))
-
-        with closing(s):
-            runner.invoke(cli, ["start", "-d"])
-            runner.invoke(cli, ["wait", "-t", "60"])
-
-            inspect = container_client.inspect_container(config.MAIN_CONTAINER_NAME)
-            assert f"{port}/udp" not in inspect["HostConfig"]["PortBindings"]
-            ip_address = list(inspect["NetworkSettings"]["Networks"].values())[0]["IPAddress"]
-
-            with pytest.raises(TimeoutError):
-                send_dns_query(name=LOCALHOST_HOSTNAME, port=port)
-
-            # use a docker container to test the DNS
-            stdout, _ = dns_query_from_container(
-                name=LOCALHOST_HOSTNAME, ip_address=ip_address, port=port
-            )
-            assert ip_address in stdout.decode().splitlines()
+        inspect = container_client.inspect_container(config.MAIN_CONTAINER_NAME)
+        assert "53/udp" not in inspect["HostConfig"]["PortBindings"]
 
 
 class TestHooks:
@@ -291,13 +304,6 @@ class TestImports:
     """Simple tests to assert that certain code paths can be imported from the CLI"""
 
     def test_import_venv(self):
-        try:
-            from functools import cached_property  # noqa
-        except Exception:
-            pytest.skip(
-                "Skip test in Python <= 3.7 (cached_property is required for VirtualEnvironment)"
-            )
-
         from localstack.utils.venv import VirtualEnvironment
 
         assert VirtualEnvironment

@@ -2,15 +2,18 @@ import json
 import os
 
 import pytest
+from botocore.config import Config
 from botocore.exceptions import ClientError
 
-from localstack.config import LEGACY_S3_PROVIDER
 from localstack.testing.aws.lambda_utils import _await_dynamodb_table_active
+from localstack.testing.aws.util import in_default_partition
 from localstack.testing.pytest import markers
 from localstack.utils.aws import arns
+from localstack.utils.aws.arns import get_partition
 from localstack.utils.http import safe_requests as requests
 from localstack.utils.strings import short_uid
 from localstack.utils.sync import retry
+from tests.aws.services.s3.conftest import TEST_S3_IMAGE
 
 THIS_FOLDER = os.path.dirname(os.path.realpath(__file__))
 TEST_LAMBDA_PYTHON_TRIGGERED_S3 = os.path.join(
@@ -18,14 +21,12 @@ TEST_LAMBDA_PYTHON_TRIGGERED_S3 = os.path.join(
 )
 
 
+@pytest.mark.skipif(condition=TEST_S3_IMAGE, reason="Lambda not enabled in S3 image")
 class TestS3NotificationsToLambda:
     @markers.aws.validated
-    @markers.snapshot.skip_snapshot_verify(
-        condition=lambda: LEGACY_S3_PROVIDER, paths=["$..s3.object.eTag", "$..s3.object.versionId"]
-    )
     def test_create_object_put_via_dynamodb(
         self,
-        s3_create_bucket,
+        s3_bucket,
         create_lambda_function,
         create_role,
         dynamodb_create_table,
@@ -33,8 +34,6 @@ class TestS3NotificationsToLambda:
         aws_client,
     ):
         snapshot.add_transformer(snapshot.transform.s3_dynamodb_notifications())
-
-        bucket_name = s3_create_bucket()
         function_name = f"func-{short_uid()}"
         table_name = f"table-{short_uid()}"
         role_name = f"test-role-{short_uid()}"
@@ -51,10 +50,12 @@ class TestS3NotificationsToLambda:
 
         role = create_role(RoleName=role_name, AssumeRolePolicyDocument=json.dumps(trust_policy))
         aws_client.iam.attach_role_policy(
-            RoleName=role_name, PolicyArn="arn:aws:iam::aws:policy/AWSLambdaExecute"
+            RoleName=role_name,
+            PolicyArn=f"arn:{get_partition(aws_client.iam.meta.region_name)}:iam::aws:policy/AWSLambdaExecute",
         )
         aws_client.iam.attach_role_policy(
-            RoleName=role_name, PolicyArn="arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess"
+            RoleName=role_name,
+            PolicyArn=f"arn:{get_partition(aws_client.iam.meta.region_name)}:iam::aws:policy/AmazonDynamoDBFullAccess",
         )
         lambda_role = role["Role"]["Arn"]
 
@@ -75,7 +76,7 @@ class TestS3NotificationsToLambda:
         )
 
         aws_client.s3.put_bucket_notification_configuration(
-            Bucket=bucket_name,
+            Bucket=s3_bucket,
             NotificationConfiguration={
                 "LambdaFunctionConfigurations": [
                     {
@@ -87,7 +88,7 @@ class TestS3NotificationsToLambda:
         )
 
         # put an object
-        aws_client.s3.put_object(Bucket=bucket_name, Key=table_name, Body="something..")
+        aws_client.s3.put_object(Bucket=s3_bucket, Key=table_name, Body="something..")
 
         def check_table():
             rs = aws_client.dynamodb.scan(TableName=table_name)
@@ -97,13 +98,12 @@ class TestS3NotificationsToLambda:
 
         retry(check_table, retries=5, sleep=1)
 
+    @pytest.mark.skipif(
+        not in_default_partition(),
+        reason="presigned_url_post currently not working with non-default partitions",
+    )
     @markers.aws.validated
     @markers.snapshot.skip_snapshot_verify(
-        condition=lambda: LEGACY_S3_PROVIDER,
-        paths=["$..data.s3.object.eTag", "$..data.s3.object.versionId", "$..data.s3.object.size"],
-    )
-    @markers.snapshot.skip_snapshot_verify(
-        condition=lambda: not LEGACY_S3_PROVIDER,
         paths=[
             "$..data.M.s3.M.object.M.eTag.S",
             "$..data.M.s3.M.object.M.size.N",
@@ -111,18 +111,17 @@ class TestS3NotificationsToLambda:
     )
     def test_create_object_by_presigned_request_via_dynamodb(
         self,
-        s3_create_bucket,
+        s3_bucket,
         create_lambda_function,
         dynamodb_create_table,
         create_role,
         snapshot,
         aws_client,
+        aws_client_factory,
     ):
         snapshot.add_transformer(snapshot.transform.s3_dynamodb_notifications())
-
-        bucket_name = s3_create_bucket()
-        function_name = "func-%s" % short_uid()
-        table_name = "table-%s" % short_uid()
+        function_name = f"func-{short_uid()}"
+        table_name = f"table-{short_uid()}"
         role_name = f"test-role-{short_uid()}"
         trust_policy = {
             "Version": "2012-10-17",
@@ -136,10 +135,12 @@ class TestS3NotificationsToLambda:
         }
         role = create_role(RoleName=role_name, AssumeRolePolicyDocument=json.dumps(trust_policy))
         aws_client.iam.attach_role_policy(
-            RoleName=role_name, PolicyArn="arn:aws:iam::aws:policy/AWSLambdaExecute"
+            RoleName=role_name,
+            PolicyArn=f"arn:{get_partition(aws_client.iam.meta.region_name)}:iam::aws:policy/AWSLambdaExecute",
         )
         aws_client.iam.attach_role_policy(
-            RoleName=role_name, PolicyArn="arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess"
+            RoleName=role_name,
+            PolicyArn=f"arn:{get_partition(aws_client.iam.meta.region_name)}:iam::aws:policy/AmazonDynamoDBFullAccess",
         )
         lambda_role = role["Role"]["Arn"]
 
@@ -160,7 +161,7 @@ class TestS3NotificationsToLambda:
         _await_dynamodb_table_active(aws_client.dynamodb, table_name)
 
         aws_client.s3.put_bucket_notification_configuration(
-            Bucket=bucket_name,
+            Bucket=s3_bucket,
             NotificationConfiguration={
                 "LambdaFunctionConfigurations": [
                     {
@@ -171,12 +172,15 @@ class TestS3NotificationsToLambda:
             },
         )
 
-        put_url = aws_client.s3.generate_presigned_url(
-            ClientMethod="put_object", Params={"Bucket": bucket_name, "Key": table_name}
+        s3_sigv4_client = aws_client_factory(
+            config=Config(signature_version="s3v4"),
+        ).s3
+        put_url = s3_sigv4_client.generate_presigned_url(
+            ClientMethod="put_object", Params={"Bucket": s3_bucket, "Key": table_name}
         )
         requests.put(put_url, data="by_presigned_put")
 
-        presigned_post = aws_client.s3.generate_presigned_post(Bucket=bucket_name, Key=table_name)
+        presigned_post = s3_sigv4_client.generate_presigned_post(Bucket=s3_bucket, Key=table_name)
         # method 1
         requests.post(
             presigned_post["url"],
@@ -193,9 +197,7 @@ class TestS3NotificationsToLambda:
         retry(check_table, retries=20, sleep=2)
 
     @markers.aws.validated
-    @pytest.mark.skipif(condition=LEGACY_S3_PROVIDER, reason="no validation implemented")
     @markers.snapshot.skip_snapshot_verify(
-        condition=lambda: not LEGACY_S3_PROVIDER,
         paths=[
             "$..Error.ArgumentName1",
             "$..Error.ArgumentValue1",
@@ -203,8 +205,7 @@ class TestS3NotificationsToLambda:
             "$..Error.ArgumentValue",
         ],
     )
-    def test_invalid_lambda_arn(self, s3_create_bucket, account_id, snapshot, aws_client):
-        bucket_name = s3_create_bucket()
+    def test_invalid_lambda_arn(self, s3_bucket, account_id, snapshot, aws_client, region_name):
         config = {
             "LambdaFunctionConfigurations": [
                 {
@@ -217,7 +218,7 @@ class TestS3NotificationsToLambda:
         config["LambdaFunctionConfigurations"][0]["LambdaFunctionArn"] = "invalid-queue"
         with pytest.raises(ClientError) as e:
             aws_client.s3.put_bucket_notification_configuration(
-                Bucket=bucket_name,
+                Bucket=s3_bucket,
                 NotificationConfiguration=config,
                 SkipDestinationValidation=False,
             )
@@ -225,25 +226,25 @@ class TestS3NotificationsToLambda:
 
         with pytest.raises(ClientError) as e:
             aws_client.s3.put_bucket_notification_configuration(
-                Bucket=bucket_name,
+                Bucket=s3_bucket,
                 NotificationConfiguration=config,
                 SkipDestinationValidation=True,
             )
         snapshot.match("invalid_skip", e.value.response)
 
         # set valid but not-existing lambda
-        config["LambdaFunctionConfigurations"][0][
-            "LambdaFunctionArn"
-        ] = f"{arns.lambda_function_arn('my-lambda', account_id=account_id, region_name=aws_client.s3.meta.region_name)}"
+        config["LambdaFunctionConfigurations"][0]["LambdaFunctionArn"] = (
+            f"{arns.lambda_function_arn('my-lambda', account_id=account_id, region_name=region_name)}"
+        )
         with pytest.raises(ClientError) as e:
             aws_client.s3.put_bucket_notification_configuration(
-                Bucket=bucket_name,
+                Bucket=s3_bucket,
                 NotificationConfiguration=config,
             )
         snapshot.match("lambda-does-not-exist", e.value.response)
 
         aws_client.s3.put_bucket_notification_configuration(
-            Bucket=bucket_name, NotificationConfiguration=config, SkipDestinationValidation=True
+            Bucket=s3_bucket, NotificationConfiguration=config, SkipDestinationValidation=True
         )
-        config = aws_client.s3.get_bucket_notification_configuration(Bucket=bucket_name)
+        config = aws_client.s3.get_bucket_notification_configuration(Bucket=s3_bucket)
         snapshot.match("skip_destination_validation", config)

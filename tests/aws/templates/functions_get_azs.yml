@@ -1,5 +1,5 @@
 Parameters:
-  Region:
+  DeployRegion:
     Type: String
 
 Resources:
@@ -10,7 +10,7 @@ Resources:
       Value:
         Fn::Join:
           - ";"
-          - Fn::GetAZs: !Ref Region
+          - Fn::GetAZs: !Ref DeployRegion
 Outputs:
   Zones:
     Value:

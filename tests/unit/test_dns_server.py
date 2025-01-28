@@ -1,11 +1,12 @@
 import threading
+from pathlib import Path
 
 import dns
 import pytest
 
 from localstack import config
 from localstack.dns.models import AliasTarget, RecordType, SOARecord, TargetRecord
-from localstack.dns.server import DnsServer, get_fallback_dns_server
+from localstack.dns.server import DnsServer, add_resolv_entry, get_fallback_dns_server
 from localstack.utils.net import get_free_udp_port
 from localstack.utils.sync import retry
 
@@ -175,6 +176,16 @@ class TestDNSServer:
         answer = query_dns("subdomain.example.org", "A")
         assert answer.answer
         assert "122.122.122.122" in answer.to_text()
+
+    def test_dns_server_specific_name_overrides_wildcard(self, dns_server, query_dns):
+        dns_server.add_host("*.example.org", TargetRecord("1.2.3.4", RecordType.A))
+        dns_server.add_host("foo.example.org", TargetRecord("5.6.7.8", RecordType.A))
+
+        answer = query_dns("foo.example.org", "A")
+
+        assert answer.answer
+        assert "5.6.7.8" in answer.to_text()
+        assert "1.2.3.4" not in answer.to_text()
 
     def test_redirect_to_localstack_lifecycle(self, dns_server, query_dns):
         """Test adding records pointing to LS at all times"""
@@ -387,3 +398,65 @@ class TestDNSServer:
                 record_type=RecordType.A,
                 target=AliasTarget(target=""),
             )
+
+
+class TestDnsUtils:
+    def test_resolv_conf_overwriting(self, tmp_path: Path, monkeypatch):
+        from localstack.dns import server
+
+        monkeypatch.setattr(server, "in_docker", lambda: True)
+
+        file = tmp_path.joinpath("resolv.conf")
+        with file.open("w") as outfile:
+            print("nameserver 127.0.0.11", file=outfile)
+
+        add_resolv_entry(file)
+
+        with file.open() as infile:
+            new_contents = infile.read()
+
+        assert "nameserver 127.0.0.1" in new_contents.splitlines()
+
+    def test_exising_resolv_conf_contents(self, tmp_path: Path, monkeypatch):
+        from localstack.dns import server
+
+        monkeypatch.setattr(server, "in_docker", lambda: True)
+
+        file = tmp_path.joinpath("resolv.conf")
+        with file.open("w") as outfile:
+            print(
+                "nameserver 127.0.0.11\n"
+                "search default.svc.cluster.local svc.cluster.local cluster.local\n"
+                "options ndots:5",
+                file=outfile,
+            )
+
+        add_resolv_entry(file)
+
+        with file.open() as infile:
+            new_contents = infile.read()
+
+        lines = new_contents.splitlines()
+        assert "nameserver 127.0.0.1" in lines
+        assert "search default.svc.cluster.local svc.cluster.local cluster.local" in lines
+        assert "options ndots:5" in lines
+
+        # check the previous value is _not_ in the file
+        assert "nameserver 127.0.0.11" not in lines
+
+    def test_no_resolv_conf_overwriting_on_host(self, tmp_path: Path, monkeypatch):
+        from localstack.dns import server
+
+        monkeypatch.setattr(server, "in_docker", lambda: False)
+
+        file = tmp_path.joinpath("resolv.conf")
+        with file.open("w") as outfile:
+            print("nameserver 127.0.0.11", file=outfile)
+
+        add_resolv_entry(file)
+
+        with file.open() as infile:
+            new_contents = infile.read()
+
+        assert "nameserver 127.0.0.1" not in new_contents.splitlines()
+        assert "nameserver 127.0.0.11" in new_contents.splitlines()
